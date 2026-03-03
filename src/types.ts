@@ -10,6 +10,7 @@ export interface ReviewLinkVersion {
   frameUrl: string;
   note: string;
   customMessage: string;
+  commentsDueAt?: string;
   postedBy: string;
   postedAt: string;
 }

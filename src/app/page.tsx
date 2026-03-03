@@ -47,6 +47,7 @@ interface NotifyPayload {
   allLinksUrl?: string;
   version: string;
   customMessage: string;
+  commentsDueAt?: string;
   postedBy: string;
 }
 
@@ -90,7 +91,13 @@ export default function Home() {
   const [drafts, setDrafts] = useState<
     Record<
       string,
-      { version: string; frameUrl: string; note: string; customMessage: string }
+      {
+        version: string;
+        frameUrl: string;
+        note: string;
+        customMessage: string;
+        commentsDueAt: string;
+      }
     >
   >({});
 
@@ -103,6 +110,7 @@ export default function Home() {
   const [adminBlastMessage, setAdminBlastMessage] = useState(
     "Please review as soon as possible.",
   );
+  const [adminReminderDueAt, setAdminReminderDueAt] = useState("");
 
   const [busyVideoId, setBusyVideoId] = useState("");
   const [editingLinkId, setEditingLinkId] = useState<string | null>(null);
@@ -114,6 +122,7 @@ export default function Home() {
     frameUrl: "",
     note: "",
     customMessage: "",
+    commentsDueAt: "",
   });
 
   useEffect(() => {
@@ -175,6 +184,8 @@ export default function Home() {
     null;
   const canManageLinks = role === "editor" || role === "admin";
   const isViewerMode = role === "client" || role === "ogilvy";
+  const formatDue = (value?: string) =>
+    value ? new Date(value).toLocaleString() : "Not set";
 
   const loginAs = (nextRole: Role) => {
     const cleanName = loginName.trim();
@@ -228,6 +239,7 @@ export default function Home() {
             frameUrl: draft.frameUrl,
             note: draft.note,
             customMessage: draft.customMessage,
+            commentsDueAt: draft.commentsDueAt || undefined,
             postedBy: userName || "Editor",
             postedAt: new Date().toISOString(),
           },
@@ -247,6 +259,7 @@ export default function Home() {
         frameUrl: draft.frameUrl,
         note: draft.note,
         customMessage: draft.customMessage,
+        commentsDueAt: draft.commentsDueAt || undefined,
         postedBy: userName || "Editor",
       });
 
@@ -255,7 +268,13 @@ export default function Home() {
       );
       setDrafts((current) => ({
         ...current,
-        [video.id]: { version: "", frameUrl: "", note: "", customMessage: "" },
+        [video.id]: {
+          version: "",
+          frameUrl: "",
+          note: "",
+          customMessage: "",
+          commentsDueAt: "",
+        },
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to save link.";
@@ -272,12 +291,19 @@ export default function Home() {
       frameUrl: link.frameUrl,
       note: link.note,
       customMessage: link.customMessage,
+      commentsDueAt: link.commentsDueAt ?? "",
     });
   };
 
   const cancelEditingLink = () => {
     setEditingLinkId(null);
-    setEditLinkDraft({ version: "", frameUrl: "", note: "", customMessage: "" });
+    setEditLinkDraft({
+      version: "",
+      frameUrl: "",
+      note: "",
+      customMessage: "",
+      commentsDueAt: "",
+    });
   };
 
   const saveEditedLink = async (video: VideoItem, linkId: string) => {
@@ -303,6 +329,7 @@ export default function Home() {
                 frameUrl: editLinkDraft.frameUrl.trim(),
                 note: editLinkDraft.note,
                 customMessage: editLinkDraft.customMessage,
+                commentsDueAt: editLinkDraft.commentsDueAt || undefined,
               }
             : link,
         ),
@@ -319,6 +346,7 @@ export default function Home() {
       frameUrl: editLinkDraft.frameUrl.trim(),
       note: editLinkDraft.note,
       customMessage: editLinkDraft.customMessage,
+      commentsDueAt: editLinkDraft.commentsDueAt || undefined,
     });
 
     setStatus("Link updated.");
@@ -416,6 +444,7 @@ export default function Home() {
             : undefined,
         version: selectedBlastLink.version,
         customMessage: adminBlastMessage,
+        commentsDueAt: selectedBlastLink.commentsDueAt,
         postedBy: userName || "Admin",
       });
 
@@ -432,6 +461,43 @@ export default function Home() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown email failure.";
       setStatus(`Email blast failed: ${message}`);
+    }
+  };
+
+  const sendAdminReminder = async () => {
+    if (!data || !adminBlastVideoId || !selectedBlastVideo || !selectedBlastLink) {
+      setStatus("Choose a video and link version first.");
+      return;
+    }
+    const recipients = roleContacts(adminBlastTeams).map((contact) => contact.email);
+    if (recipients.length === 0) {
+      setStatus("No recipients found in selected teams.");
+      return;
+    }
+
+    const dueAt = adminReminderDueAt || selectedBlastLink.commentsDueAt || "";
+    try {
+      await sendEmailBlast({
+        recipients,
+        subject: `${selectedBlastVideo.title} - Reminder (${selectedBlastLink.version})`,
+        videoTitle: selectedBlastVideo.title,
+        frameUrl: selectedBlastLink.frameUrl,
+        videoId: selectedBlastVideo.id,
+        allLinksUrl:
+          typeof window !== "undefined"
+            ? `${window.location.origin}/?video=${encodeURIComponent(selectedBlastVideo.id)}`
+            : undefined,
+        version: selectedBlastLink.version,
+        customMessage:
+          adminBlastMessage ||
+          "Reminder: please review and leave comments before the due time.",
+        commentsDueAt: dueAt || undefined,
+        postedBy: userName || "Admin",
+      });
+      setStatus("Reminder sent.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown email failure.";
+      setStatus(`Reminder failed: ${message}`);
     }
   };
 
@@ -586,6 +652,7 @@ export default function Home() {
                   frameUrl: "",
                   note: "",
                   customMessage: "",
+                  commentsDueAt: "",
                 };
 
                 return (
@@ -615,6 +682,9 @@ export default function Home() {
                             {latest
                               ? new Date(latest.postedAt).toLocaleString()
                               : "N/A"}
+                          </p>
+                          <p className="text-[11px] text-amber-300">
+                            Comments due: {formatDue(latest?.commentsDueAt)}
                           </p>
                           {latest ? (
                             <a
@@ -654,6 +724,9 @@ export default function Home() {
                                 </p>
                                 <p className="text-[11px] text-slate-400">
                                   Posted: {new Date(link.postedAt).toLocaleString()}
+                                </p>
+                                <p className="text-[11px] text-amber-300">
+                                  Comments due: {formatDue(link.commentsDueAt)}
                                 </p>
                                 <a
                                   href={link.frameUrl}
@@ -707,6 +780,17 @@ export default function Home() {
                                   placeholder="Notes"
                                   className="h-16 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
                                 />
+                                <input
+                                  type="datetime-local"
+                                  value={editLinkDraft.commentsDueAt}
+                                  onChange={(event) =>
+                                    setEditLinkDraft((current) => ({
+                                      ...current,
+                                      commentsDueAt: event.target.value,
+                                    }))
+                                  }
+                                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                />
                                 <div className="flex gap-2">
                                   <button
                                     onClick={() => saveEditedLink(video, link.id)}
@@ -735,6 +819,9 @@ export default function Home() {
                                 </a>
                                 <p className="mt-1 text-[11px] text-slate-400">
                                   {link.customMessage || link.note}
+                                </p>
+                                <p className="text-[11px] text-amber-300">
+                                  Comments due: {formatDue(link.commentsDueAt)}
                                 </p>
                                 {canManageLinks ? (
                                   <div className="mt-2 flex gap-2">
@@ -796,6 +883,17 @@ export default function Home() {
                           }
                           placeholder="Notes for admin"
                           className="h-16 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+                        />
+                        <input
+                          type="datetime-local"
+                          value={draft.commentsDueAt}
+                          onChange={(event) =>
+                            setDrafts((current) => ({
+                              ...current,
+                              [video.id]: { ...draft, commentsDueAt: event.target.value },
+                            }))
+                          }
+                          className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
                         />
                         <button
                           onClick={() => postLink(video)}
@@ -920,8 +1018,20 @@ export default function Home() {
               onChange={(event) => setAdminBlastMessage(event.target.value)}
               className="mt-2 h-16 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
             />
+            <input
+              type="datetime-local"
+              value={adminReminderDueAt}
+              onChange={(event) => setAdminReminderDueAt(event.target.value)}
+              className="mt-2 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+            />
             <button onClick={sendAdminBlast} className="mt-2 rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold">
               Send blast
+            </button>
+            <button
+              onClick={sendAdminReminder}
+              className="mt-2 rounded-md bg-amber-600 px-3 py-2 text-xs font-semibold"
+            >
+              Send reminder
             </button>
           </div>
         </section>

@@ -29,6 +29,28 @@ const fallbackRead = (): AppData => loadAppData();
 
 const fallbackWrite = (data: AppData) => saveAppData(data);
 
+const DUE_TAG_REGEX = /^\[\[DUE:([^\]]+)\]\]\s*/;
+
+const splitDueFromNotes = (notes: string | null): { note: string; commentsDueAt?: string } => {
+  const raw = notes ?? "";
+  const match = raw.match(DUE_TAG_REGEX);
+  if (!match) {
+    return { note: raw };
+  }
+  return {
+    commentsDueAt: match[1],
+    note: raw.replace(DUE_TAG_REGEX, "").trim(),
+  };
+};
+
+const combineDueAndNotes = (note: string, commentsDueAt?: string): string => {
+  const cleanNote = note.trim();
+  if (!commentsDueAt) {
+    return cleanNote;
+  }
+  return `[[DUE:${commentsDueAt}]] ${cleanNote}`.trim();
+};
+
 export const seedLocalStorageIfMissing = () => {
   const local = loadAppData();
   if (!local.videos.length) {
@@ -70,13 +92,15 @@ export const fetchAppData = async (): Promise<AppData> => {
 
   const linkMap = new Map<string, ReviewLinkVersion[]>();
   (linksRes.data as DbReviewLink[]).forEach((link) => {
+    const { note, commentsDueAt } = splitDueFromNotes(link.notes);
     const current = linkMap.get(link.video_id) ?? [];
     current.push({
       id: link.id,
       version: link.version_label,
       frameUrl: link.frameio_url,
-      note: link.notes ?? "",
+      note,
       customMessage: link.custom_message ?? "",
+      commentsDueAt,
       postedBy: link.posted_by_name,
       postedAt: link.posted_at,
     });
@@ -107,6 +131,7 @@ export const saveReviewLink = async (params: {
   frameUrl: string;
   note: string;
   customMessage: string;
+  commentsDueAt?: string;
   postedBy: string;
 }) => {
   if (!isSupabaseConfigured || !supabase) {
@@ -117,7 +142,7 @@ export const saveReviewLink = async (params: {
     video_id: params.videoId,
     version_label: params.version,
     frameio_url: params.frameUrl,
-    notes: params.note,
+    notes: combineDueAndNotes(params.note, params.commentsDueAt),
     custom_message: params.customMessage,
     posted_by_name: params.postedBy,
   });
@@ -129,6 +154,7 @@ export const updateReviewLinkRecord = async (params: {
   frameUrl: string;
   note: string;
   customMessage: string;
+  commentsDueAt?: string;
 }) => {
   if (!isSupabaseConfigured || !supabase) {
     return;
@@ -138,7 +164,7 @@ export const updateReviewLinkRecord = async (params: {
     .update({
       version_label: params.version,
       frameio_url: params.frameUrl,
-      notes: params.note,
+      notes: combineDueAndNotes(params.note, params.commentsDueAt),
       custom_message: params.customMessage,
     })
     .eq("id", params.linkId);
