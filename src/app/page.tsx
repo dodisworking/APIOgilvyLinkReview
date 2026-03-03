@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
 import {
   addContactRecord,
   deleteReviewLinkRecord,
@@ -13,22 +12,16 @@ import {
   seedLocalStorageIfMissing,
   updateReviewLinkRecord,
 } from "@/lib/data-service";
-import {
-  clearSession,
-  loadSession,
-  recordLoginActivity,
-  saveAppData,
-  saveSession,
-} from "@/lib/storage";
+import { saveAppData } from "@/lib/storage";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import {
   AppData,
   Contact,
-  Role,
   TeamType,
   VideoItem,
 } from "@/types";
-const liveDayOrder = [
+
+const dayOrder = [
   "Monday",
   "Tuesday",
   "Wednesday",
@@ -67,17 +60,11 @@ const sendEmailBlast = async (payload: NotifyPayload) => {
 
 export default function Home() {
   const adminPassword = process.env.NEXT_PUBLIC_ADMIN_PASSWORD ?? "123";
-  const router = useRouter();
-  const [role, setRole] = useState<Role | null>(null);
-  const [requestedView, setRequestedView] = useState<Role | null>(null);
+  const [entered, setEntered] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [requestedVideoId, setRequestedVideoId] = useState<string | null>(null);
-  const [userName, setUserName] = useState("");
-  const [loginName, setLoginName] = useState("");
-  const [loginEmail, setLoginEmail] = useState("");
   const [data, setData] = useState<AppData | null>(null);
   const [status, setStatus] = useState("");
-
-  const [adminVisible, setAdminVisible] = useState(false);
   const [newContact, setNewContact] = useState<{
     name: string;
     email: string;
@@ -114,9 +101,6 @@ export default function Home() {
 
   const [busyVideoId, setBusyVideoId] = useState("");
   const [editingLinkId, setEditingLinkId] = useState<string | null>(null);
-  const [expandedHistoryByVideo, setExpandedHistoryByVideo] = useState<
-    Record<string, boolean>
-  >({});
   const [editLinkDraft, setEditLinkDraft] = useState({
     version: "",
     frameUrl: "",
@@ -126,20 +110,11 @@ export default function Home() {
   });
 
   useEffect(() => {
-    const session = loadSession();
     seedLocalStorageIfMissing();
     fetchAppData().then((appData) => setData(appData));
-
-    if (session.role) {
-      setRole(session.role);
-      setUserName(session.name);
-      setLoginName(session.name);
-    }
     if (typeof window !== "undefined") {
       const search = new URLSearchParams(window.location.search);
-      const view = search.get("view") as Role | null;
       const video = search.get("video");
-      setRequestedView(view);
       setRequestedVideoId(video);
     }
   }, []);
@@ -150,7 +125,7 @@ export default function Home() {
     }
   }, [data]);
 
-  const groupedVideos = useMemo(() => {
+  const groupedByDeliverDay = useMemo(() => {
     if (!data) {
       return { days: [], groups: {} as Record<string, VideoItem[]> };
     }
@@ -169,8 +144,33 @@ export default function Home() {
     }
 
     const days = Object.keys(groups).sort((a, b) => {
-      const aIndex = liveDayOrder.includes(a) ? liveDayOrder.indexOf(a) : 999;
-      const bIndex = liveDayOrder.includes(b) ? liveDayOrder.indexOf(b) : 999;
+      const aIndex = dayOrder.includes(a) ? dayOrder.indexOf(a) : 999;
+      const bIndex = dayOrder.includes(b) ? dayOrder.indexOf(b) : 999;
+      return aIndex - bIndex;
+    });
+    return { days, groups };
+  }, [data, requestedVideoId]);
+
+  const groupedByShootDay = useMemo(() => {
+    if (!data) {
+      return { days: [], groups: {} as Record<string, VideoItem[]> };
+    }
+    const groups: Record<string, VideoItem[]> = {};
+    const videosToShow = requestedVideoId
+      ? data.videos.filter((video) => video.id === requestedVideoId)
+      : data.videos;
+
+    for (const video of videosToShow) {
+      const shootDay = video.day || "Unscheduled";
+      if (!groups[shootDay]) {
+        groups[shootDay] = [];
+      }
+      groups[shootDay].push(video);
+    }
+
+    const days = Object.keys(groups).sort((a, b) => {
+      const aIndex = dayOrder.includes(a) ? dayOrder.indexOf(a) : 999;
+      const bIndex = dayOrder.includes(b) ? dayOrder.indexOf(b) : 999;
       return aIndex - bIndex;
     });
     return { days, groups };
@@ -182,29 +182,8 @@ export default function Home() {
     selectedBlastVideo?.links.find((item) => item.id === adminBlastLinkId) ??
     selectedBlastVideo?.links[0] ??
     null;
-  const canManageLinks = role === "editor" || role === "admin";
-  const isViewerMode = role === "client" || role === "ogilvy";
   const formatDue = (value?: string) =>
     value ? new Date(value).toLocaleString() : "Not set";
-
-  const loginAs = (nextRole: Role) => {
-    const cleanName = loginName.trim();
-    if (!cleanName && nextRole !== "admin") {
-      setStatus("Please enter your name.");
-      return;
-    }
-
-    setRole(nextRole);
-    setUserName(cleanName || "Admin");
-    saveSession(nextRole, cleanName || "Admin");
-    recordLoginActivity({
-      name: cleanName || "Admin",
-      email: loginEmail.trim(),
-      role: nextRole,
-    });
-    router.replace(`/?view=${nextRole}`);
-    setStatus("");
-  };
 
   const roleContacts = (teams: TeamType[]) => {
     if (!data) {
@@ -240,7 +219,7 @@ export default function Home() {
             note: draft.note,
             customMessage: draft.customMessage,
             commentsDueAt: draft.commentsDueAt || undefined,
-            postedBy: userName || "Editor",
+            postedBy: "Admin",
             postedAt: new Date().toISOString(),
           },
           ...item.links,
@@ -260,11 +239,11 @@ export default function Home() {
         note: draft.note,
         customMessage: draft.customMessage,
         commentsDueAt: draft.commentsDueAt || undefined,
-        postedBy: userName || "Editor",
+        postedBy: "Admin",
       });
 
       setStatus(
-        `Recorded ${draft.version} for ${video.title}. Admin can send notifications when ready.`,
+        `Recorded ${draft.version} for ${video.title}.`,
       );
       setDrafts((current) => ({
         ...current,
@@ -445,7 +424,7 @@ export default function Home() {
         version: selectedBlastLink.version,
         customMessage: adminBlastMessage,
         commentsDueAt: selectedBlastLink.commentsDueAt,
-        postedBy: userName || "Admin",
+        postedBy: "Admin",
       });
 
       await saveNotificationLog({
@@ -492,7 +471,7 @@ export default function Home() {
           adminBlastMessage ||
           "Reminder: please review and leave comments before the due time.",
         commentsDueAt: dueAt || undefined,
-        postedBy: userName || "Admin",
+        postedBy: "Admin",
       });
       setStatus("Reminder sent.");
     } catch (error) {
@@ -505,10 +484,10 @@ export default function Home() {
     return <main className="p-6 text-sm">Loading app...</main>;
   }
 
-  if (!role) {
+  if (!entered) {
     return (
-      <main className="mx-auto min-h-screen max-w-md bg-slate-950 p-6 text-slate-100">
-        <div className="mb-4 flex justify-center">
+      <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center bg-slate-950 p-6 text-slate-100">
+        <div className="mb-6 flex justify-center">
           <Image
             src="/arnold-palmer-mastercard.png"
             alt="Arnold Palmer Invitational presented by Mastercard"
@@ -518,9 +497,9 @@ export default function Home() {
             priority
           />
         </div>
-        <h1 className="text-2xl font-semibold">Production Review Hub</h1>
-        <p className="mt-2 text-sm text-slate-300">
-          Choose your role to open the schedule and review links.
+        <h1 className="text-center text-2xl font-semibold">Production Review Hub</h1>
+        <p className="mt-3 text-center text-sm text-slate-300">
+          One place for every video, every link, and every review date.
         </p>
         {isSupabaseConfigured ? (
           <p className="mt-2 rounded-lg border border-emerald-700/60 bg-emerald-950/30 p-2 text-xs text-emerald-300">
@@ -531,77 +510,13 @@ export default function Home() {
             Local mode enabled. Add Supabase env vars to share data across users.
           </p>
         )}
-        <div className="mt-6 space-y-3">
-          <input
-            value={loginName}
-            onChange={(event) => setLoginName(event.target.value)}
-            placeholder="Your name"
-            className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm"
-          />
-          <input
-            value={loginEmail}
-            onChange={(event) => setLoginEmail(event.target.value)}
-            placeholder="Your email"
-            className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm"
-          />
-          <button onClick={() => loginAs("client")} className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-medium">
-            Enter as Client
-          </button>
-          <button onClick={() => loginAs("editor")} className="w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-medium">
-            Enter as Editor
-          </button>
-          <button onClick={() => loginAs("ogilvy")} className="w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-medium">
-            Enter as Ogilvy
-          </button>
-        </div>
         <button
-          onClick={() => setAdminVisible((current) => !current)}
-          className="mt-8 text-xs text-slate-400 underline"
+          onClick={() => setEntered(true)}
+          className="mt-8 w-full animate-pulse rounded-2xl border border-cyan-400 bg-cyan-500/10 px-4 py-4 text-base font-semibold text-cyan-200 shadow-lg shadow-cyan-500/20 transition hover:bg-cyan-500/20"
         >
-          admin access
+          Tap to view links
         </button>
-        {adminVisible ? (
-          <button
-            onClick={() => {
-              const password = window.prompt("Admin password");
-              if (password === adminPassword) {
-                setRole("admin");
-                setUserName("Admin");
-                saveSession("admin", "Admin");
-                recordLoginActivity({
-                  name: "Admin",
-                  email: "",
-                  role: "admin",
-                });
-                router.replace("/?view=admin");
-                setStatus("");
-              } else {
-                setStatus("Wrong admin password.");
-              }
-            }}
-            className="mt-2 block text-xs text-amber-300 underline"
-          >
-            open hidden admin
-          </button>
-        ) : null}
         {status ? <p className="mt-4 rounded-lg bg-slate-800 p-2 text-xs">{status}</p> : null}
-      </main>
-    );
-  }
-
-  if (requestedView && requestedView !== role) {
-    return (
-      <main className="mx-auto min-h-screen max-w-md bg-slate-950 p-6 text-slate-100">
-        <h1 className="text-xl font-semibold">Role Access Mismatch</h1>
-        <p className="mt-2 text-sm text-slate-300">
-          You are signed in as {role}, but attempted to access {requestedView} view.
-        </p>
-        <button
-          onClick={() => router.replace(`/?view=${role}`)}
-          className="mt-4 rounded-md bg-slate-700 px-3 py-2 text-sm"
-        >
-          Go to my view
-        </button>
       </main>
     );
   }
@@ -621,32 +536,56 @@ export default function Home() {
       <header className="sticky top-0 z-10 rounded-xl bg-slate-900/95 p-3 backdrop-blur">
         <h1 className="text-lg font-semibold">Production Review Hub</h1>
         <p className="text-xs text-slate-300">
-          Logged in as {userName} ({role})
+          Full link history + posting dates for every video
         </p>
         <button
           onClick={() => {
-            clearSession();
-            setRole(null);
-            setUserName("");
-            setStatus("");
-            router.replace("/");
+            if (isAdmin) {
+              setIsAdmin(false);
+              setStatus("Admin mode disabled.");
+              return;
+            }
+            const password = window.prompt("Admin password");
+            if (password === adminPassword) {
+              setIsAdmin(true);
+              setStatus("Admin mode enabled.");
+            } else {
+              setStatus("Wrong admin password.");
+            }
           }}
           className="mt-2 rounded-md bg-slate-700 px-2 py-1 text-xs"
         >
-          Switch role
+          {isAdmin ? "Exit admin mode" : "Admin mode"}
         </button>
       </header>
 
       {status ? <p className="mt-3 rounded-lg bg-slate-800 p-2 text-xs">{status}</p> : null}
 
+      <section className="mt-4 rounded-xl border border-cyan-500/30 bg-slate-900 p-3">
+        <h2 className="text-base font-semibold text-cyan-200">What We Are Shooting</h2>
+        <div className="mt-3 space-y-3">
+          {groupedByShootDay.days.map((day) => (
+            <article key={day} className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+              <h3 className="text-sm font-semibold">{day}</h3>
+              <div className="mt-2 space-y-1 text-xs text-slate-300">
+                {(groupedByShootDay.groups[day] ?? []).map((video) => (
+                  <p key={video.id}>
+                    {video.emoji} {video.title} - shoots {video.day} {video.time}, delivers{" "}
+                    {video.goesLive || "TBD"}
+                  </p>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
       <section className="mt-4 space-y-4">
-        {groupedVideos.days.map((day) => (
+        {groupedByDeliverDay.days.map((day) => (
           <article key={day} className="rounded-xl border border-slate-800 bg-slate-900 p-3">
             <h2 className="text-base font-semibold">{day}</h2>
             <div className="mt-3 space-y-3">
-              {(groupedVideos.groups[day] ?? []).map((video) => {
-                const latest = video.links[0];
-                const isHistoryOpen = Boolean(expandedHistoryByVideo[video.id]);
+              {(groupedByDeliverDay.groups[day] ?? []).map((video) => {
                 const draft = drafts[video.id] ?? {
                   version: "",
                   frameUrl: "",
@@ -662,86 +601,13 @@ export default function Home() {
                         <p className="font-medium">
                           {video.emoji} {video.title}
                         </p>
-                        <p className="text-xs text-slate-400">Goes live {video.goesLive}</p>
+                        <p className="text-xs text-slate-400">
+                          Shoots {video.day} {video.time} • Delivers {video.goesLive || "TBD"}
+                        </p>
                       </div>
-                      {latest ? (
-                        <span className="rounded-full bg-emerald-700 px-2 py-1 text-[10px] font-semibold">
-                          Link {latest.version} ready
-                        </span>
-                      ) : null}
                     </div>
 
-                    {video.links.length > 0 && isViewerMode ? (
-                      <div className="mt-3 space-y-2">
-                        <div className="rounded-md bg-slate-900 p-2">
-                          <p className="text-xs font-semibold">
-                            Most recent: {latest?.version}
-                          </p>
-                          <p className="text-[11px] text-slate-400">
-                            Posted:{" "}
-                            {latest
-                              ? new Date(latest.postedAt).toLocaleString()
-                              : "N/A"}
-                          </p>
-                          <p className="text-[11px] text-amber-300">
-                            Comments due: {formatDue(latest?.commentsDueAt)}
-                          </p>
-                          {latest ? (
-                            <a
-                              href={latest.frameUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="mt-1 inline-block text-xs text-blue-300 underline"
-                            >
-                              Open latest review link
-                            </a>
-                          ) : null}
-                          <div className="mt-2">
-                            <button
-                              onClick={() =>
-                                setExpandedHistoryByVideo((current) => ({
-                                  ...current,
-                                  [video.id]: !current[video.id],
-                                }))
-                              }
-                              className="rounded-md bg-slate-700 px-2 py-1 text-xs"
-                            >
-                              {isHistoryOpen
-                                ? "Hide link history"
-                                : "View link history"}
-                            </button>
-                          </div>
-                        </div>
-                        {isHistoryOpen ? (
-                          <div className="space-y-2">
-                            {video.links.map((link) => (
-                              <div
-                                key={link.id}
-                                className="rounded-md border border-slate-800 bg-slate-900 p-2"
-                              >
-                                <p className="text-xs font-semibold">
-                                  {link.version}
-                                </p>
-                                <p className="text-[11px] text-slate-400">
-                                  Posted: {new Date(link.postedAt).toLocaleString()}
-                                </p>
-                                <p className="text-[11px] text-amber-300">
-                                  Comments due: {formatDue(link.commentsDueAt)}
-                                </p>
-                                <a
-                                  href={link.frameUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-xs text-blue-300 underline"
-                                >
-                                  Open Frame.io
-                                </a>
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : video.links.length > 0 ? (
+                    {video.links.length > 0 ? (
                       <div className="mt-3 space-y-2">
                         {video.links.map((link) => (
                           <div key={link.id} className="rounded-md bg-slate-900 p-2">
@@ -823,7 +689,7 @@ export default function Home() {
                                 <p className="text-[11px] text-amber-300">
                                   Comments due: {formatDue(link.commentsDueAt)}
                                 </p>
-                                {canManageLinks ? (
+                                {isAdmin ? (
                                   <div className="mt-2 flex gap-2">
                                     <button
                                       onClick={() => startEditingLink(link)}
@@ -848,9 +714,11 @@ export default function Home() {
                       <p className="mt-3 text-xs text-slate-500">No links posted yet.</p>
                     )}
 
-                    {role === "editor" || role === "admin" ? (
+                    {isAdmin ? (
                       <div className="mt-3 space-y-2 rounded-md border border-slate-800 p-2">
-                        <p className="text-xs font-semibold text-slate-300">Post new review link</p>
+                        <p className="text-xs font-semibold text-slate-300">
+                          Admin: post new review link
+                        </p>
                         <input
                           value={draft.version}
                           onChange={(event) =>
@@ -912,7 +780,7 @@ export default function Home() {
         ))}
       </section>
 
-      {role === "admin" ? (
+      {isAdmin ? (
         <section className="mt-4 space-y-4 rounded-xl border border-amber-500/40 bg-slate-900 p-3">
           <h2 className="text-base font-semibold text-amber-300">Admin Distribution Console</h2>
 
