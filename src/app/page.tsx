@@ -1,0 +1,762 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  addContactRecord,
+  fetchAppData,
+  removeContactRecord,
+  saveNotificationLog,
+  saveReviewLink,
+  seedLocalStorageIfMissing,
+  updateVideoRecord,
+} from "@/lib/data-service";
+import {
+  clearSession,
+  loadLoginActivity,
+  loadSession,
+  recordLoginActivity,
+  saveAppData,
+  saveSession,
+} from "@/lib/storage";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import {
+  AppData,
+  Contact,
+  LoginActivityEntry,
+  Role,
+  TeamType,
+  VideoItem,
+} from "@/types";
+
+const dayOrder = ["Tuesday", "Wednesday", "Thursday", "Friday"];
+const liveDayOrder = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday",
+];
+
+interface NotifyPayload {
+  recipients: string[];
+  subject: string;
+  videoTitle: string;
+  frameUrl: string;
+  version: string;
+  customMessage: string;
+  postedBy: string;
+}
+
+const sendEmailBlast = async (payload: NotifyPayload) => {
+  const response = await fetch("/api/notify", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const result = (await response.json()) as { error?: string };
+  if (!response.ok) {
+    throw new Error(result.error ?? "Failed to send email.");
+  }
+};
+
+export default function Home() {
+  const adminPassword = process.env.NEXT_PUBLIC_ADMIN_PASSWORD ?? "123";
+  const router = useRouter();
+  const [role, setRole] = useState<Role | null>(null);
+  const [requestedView, setRequestedView] = useState<Role | null>(null);
+  const [userName, setUserName] = useState("");
+  const [loginName, setLoginName] = useState("");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [data, setData] = useState<AppData | null>(null);
+  const [status, setStatus] = useState("");
+
+  const [adminVisible, setAdminVisible] = useState(false);
+  const [newContact, setNewContact] = useState<{
+    name: string;
+    email: string;
+    team: TeamType;
+  }>({
+    name: "",
+    email: "",
+    team: "client",
+  });
+
+  const [drafts, setDrafts] = useState<
+    Record<
+      string,
+      { version: string; frameUrl: string; note: string; customMessage: string }
+    >
+  >({});
+
+  const [adminBlastVideoId, setAdminBlastVideoId] = useState("");
+  const [adminBlastLinkId, setAdminBlastLinkId] = useState("");
+  const [adminBlastTeams, setAdminBlastTeams] = useState<TeamType[]>([
+    "client",
+    "ogilvy",
+  ]);
+  const [adminBlastMessage, setAdminBlastMessage] = useState(
+    "Please review as soon as possible.",
+  );
+
+  const [adminEditVideoId, setAdminEditVideoId] = useState("");
+  const [adminEditTime, setAdminEditTime] = useState("");
+  const [adminEditDay, setAdminEditDay] = useState("Tuesday");
+  const [adminEditNote, setAdminEditNote] = useState("");
+  const [busyVideoId, setBusyVideoId] = useState("");
+  const [loginActivity, setLoginActivity] = useState<LoginActivityEntry[]>([]);
+
+  useEffect(() => {
+    const session = loadSession();
+    seedLocalStorageIfMissing();
+    fetchAppData().then((appData) => setData(appData));
+    setLoginActivity(loadLoginActivity());
+
+    if (session.role) {
+      setRole(session.role);
+      setUserName(session.name);
+      setLoginName(session.name);
+    }
+    if (typeof window !== "undefined") {
+      const view = new URLSearchParams(window.location.search).get(
+        "view",
+      ) as Role | null;
+      setRequestedView(view);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (data) {
+      saveAppData(data);
+    }
+  }, [data]);
+
+  const groupedVideos = useMemo(() => {
+    if (!data) {
+      return { days: [], groups: {} as Record<string, VideoItem[]> };
+    }
+
+    const groups: Record<string, VideoItem[]> = {};
+    const liveVideos = data.videos.filter((video) => Boolean(video.goesLive));
+
+    for (const video of liveVideos) {
+      const liveDay = video.goesLive as string;
+      if (!groups[liveDay]) {
+        groups[liveDay] = [];
+      }
+      groups[liveDay].push(video);
+    }
+
+    const days = Object.keys(groups).sort(
+      (a, b) => liveDayOrder.indexOf(a) - liveDayOrder.indexOf(b),
+    );
+    return { days, groups };
+  }, [data]);
+
+  const selectedBlastVideo =
+    data?.videos.find((item) => item.id === adminBlastVideoId) ?? null;
+  const selectedBlastLink =
+    selectedBlastVideo?.links.find((item) => item.id === adminBlastLinkId) ??
+    selectedBlastVideo?.links[0] ??
+    null;
+
+  const loginAs = (nextRole: Role) => {
+    const cleanName = loginName.trim();
+    if (!cleanName) {
+      setStatus("Please enter your name.");
+      return;
+    }
+
+    setRole(nextRole);
+    setUserName(cleanName);
+    saveSession(nextRole, cleanName);
+    setLoginActivity(
+      recordLoginActivity({
+        name: cleanName,
+        email: loginEmail.trim(),
+        role: nextRole,
+      }),
+    );
+    router.replace(`/?view=${nextRole}`);
+    setStatus("");
+  };
+
+  const roleContacts = (teams: TeamType[]) => {
+    if (!data) {
+      return [];
+    }
+    return data.contacts.filter((contact) => teams.includes(contact.team));
+  };
+
+  const postLink = async (video: VideoItem) => {
+    if (!data) {
+      return;
+    }
+    const draft = drafts[video.id];
+    if (!draft?.version || !draft?.frameUrl) {
+      setStatus("Version and Frame.io link are required.");
+      return;
+    }
+
+    setBusyVideoId(video.id);
+    setStatus("");
+
+    const updatedVideos = data.videos.map((item) => {
+      if (item.id !== video.id) {
+        return item;
+      }
+      return {
+        ...item,
+        links: [
+          {
+            id: crypto.randomUUID(),
+            version: draft.version,
+            frameUrl: draft.frameUrl,
+            note: draft.note,
+            customMessage: draft.customMessage,
+            postedBy: userName || "Editor",
+            postedAt: new Date().toISOString(),
+          },
+          ...item.links,
+        ],
+      };
+    });
+
+    const nextData = { ...data, videos: updatedVideos };
+    setData(nextData);
+    saveAppData(nextData);
+
+    try {
+      await saveReviewLink({
+        videoId: video.id,
+        version: draft.version,
+        frameUrl: draft.frameUrl,
+        note: draft.note,
+        customMessage: draft.customMessage,
+        postedBy: userName || "Editor",
+      });
+
+      setStatus(
+        `Recorded ${draft.version} for ${video.title}. Admin can send notifications when ready.`,
+      );
+      setDrafts((current) => ({
+        ...current,
+        [video.id]: { version: "", frameUrl: "", note: "", customMessage: "" },
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to save link.";
+      setStatus(`Link save failed: ${message}`);
+    } finally {
+      setBusyVideoId("");
+    }
+  };
+
+  const addContact = () => {
+    if (!data) {
+      return;
+    }
+    if (!newContact.name.trim() || !newContact.email.trim()) {
+      setStatus("Contact name and email are required.");
+      return;
+    }
+    const contact: Contact = {
+      id: crypto.randomUUID(),
+      name: newContact.name.trim(),
+      email: newContact.email.trim(),
+      team: newContact.team,
+    };
+    const nextData = { ...data, contacts: [...data.contacts, contact] };
+    setData(nextData);
+    saveAppData(nextData);
+    addContactRecord(contact);
+    setNewContact({ name: "", email: "", team: "client" });
+    setStatus("Contact added.");
+  };
+
+  const removeContact = (id: string) => {
+    if (!data) {
+      return;
+    }
+    const nextData = {
+      ...data,
+      contacts: data.contacts.filter((contact) => contact.id !== id),
+    };
+    setData(nextData);
+    saveAppData(nextData);
+    removeContactRecord(id);
+    setStatus("Contact removed.");
+  };
+
+  const sendAdminBlast = async () => {
+    if (!data || !adminBlastVideoId) {
+      setStatus("Choose a video first.");
+      return;
+    }
+    if (!selectedBlastVideo || !selectedBlastLink) {
+      setStatus("Choose a posted link version first.");
+      return;
+    }
+
+    const recipients = roleContacts(adminBlastTeams).map((contact) => contact.email);
+    if (recipients.length === 0) {
+      setStatus("No recipients found in selected teams.");
+      return;
+    }
+
+    try {
+      await sendEmailBlast({
+        recipients,
+        subject: `${selectedBlastVideo.title} - ${selectedBlastLink.version} Ready for Review`,
+        videoTitle: selectedBlastVideo.title,
+        frameUrl: selectedBlastLink.frameUrl,
+        version: selectedBlastLink.version,
+        customMessage: adminBlastMessage,
+        postedBy: userName || "Admin",
+      });
+
+      await saveNotificationLog({
+        videoId: selectedBlastVideo.id,
+        version: selectedBlastLink.version,
+        recipients,
+        teams: adminBlastTeams,
+        subject: `${selectedBlastVideo.title} - Link Ready for Review`,
+        message: adminBlastMessage,
+      });
+
+      setStatus("Admin blast sent.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown email failure.";
+      setStatus(`Email blast failed: ${message}`);
+    }
+  };
+
+  const loadVideoIntoAdminEditor = (videoId: string) => {
+    if (!data) {
+      return;
+    }
+    const selected = data.videos.find((video) => video.id === videoId);
+    setAdminEditVideoId(videoId);
+    setAdminEditTime(selected?.time ?? "");
+    setAdminEditDay(selected?.day ?? "Tuesday");
+    setAdminEditNote(selected?.note ?? "");
+  };
+
+  const saveVideoEdits = async () => {
+    if (!data || !adminEditVideoId) {
+      setStatus("Choose a video to edit.");
+      return;
+    }
+
+    const nextVideos = data.videos.map((video) =>
+      video.id === adminEditVideoId
+        ? { ...video, time: adminEditTime, day: adminEditDay, note: adminEditNote }
+        : video,
+    );
+
+    const nextData = { ...data, videos: nextVideos };
+    setData(nextData);
+    saveAppData(nextData);
+
+    await updateVideoRecord(adminEditVideoId, {
+      day: adminEditDay,
+      time: adminEditTime,
+      note: adminEditNote,
+    });
+    setStatus("Video schedule updated.");
+  };
+
+  if (!data) {
+    return <main className="p-6 text-sm">Loading app...</main>;
+  }
+
+  if (!role) {
+    return (
+      <main className="mx-auto min-h-screen max-w-md bg-slate-950 p-6 text-slate-100">
+        <h1 className="text-2xl font-semibold">Production Review Hub</h1>
+        <p className="mt-2 text-sm text-slate-300">
+          Choose your role to open the schedule and review links.
+        </p>
+        {isSupabaseConfigured ? (
+          <p className="mt-2 rounded-lg border border-emerald-700/60 bg-emerald-950/30 p-2 text-xs text-emerald-300">
+            Supabase mode enabled.
+          </p>
+        ) : (
+          <p className="mt-2 rounded-lg border border-amber-700/60 bg-amber-950/30 p-2 text-xs text-amber-300">
+            Local mode enabled. Add Supabase env vars to share data across users.
+          </p>
+        )}
+        <div className="mt-6 space-y-3">
+          <input
+            value={loginName}
+            onChange={(event) => setLoginName(event.target.value)}
+            placeholder="Your name"
+            className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm"
+          />
+          <input
+            value={loginEmail}
+            onChange={(event) => setLoginEmail(event.target.value)}
+            placeholder="Your email"
+            className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm"
+          />
+          <button onClick={() => loginAs("client")} className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-medium">
+            Enter as Client
+          </button>
+          <button onClick={() => loginAs("editor")} className="w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-medium">
+            Enter as Editor
+          </button>
+          <button onClick={() => loginAs("ogilvy")} className="w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-medium">
+            Enter as Ogilvy
+          </button>
+        </div>
+        <button
+          onClick={() => setAdminVisible((current) => !current)}
+          className="mt-8 text-xs text-slate-400 underline"
+        >
+          admin access
+        </button>
+        {adminVisible ? (
+          <button
+            onClick={() => {
+              const password = window.prompt("Admin password");
+              if (password === adminPassword) {
+                loginAs("admin");
+              } else {
+                setStatus("Wrong admin password.");
+              }
+            }}
+            className="mt-2 block text-xs text-amber-300 underline"
+          >
+            open hidden admin
+          </button>
+        ) : null}
+        {status ? <p className="mt-4 rounded-lg bg-slate-800 p-2 text-xs">{status}</p> : null}
+      </main>
+    );
+  }
+
+  if (requestedView && requestedView !== role) {
+    return (
+      <main className="mx-auto min-h-screen max-w-md bg-slate-950 p-6 text-slate-100">
+        <h1 className="text-xl font-semibold">Role Access Mismatch</h1>
+        <p className="mt-2 text-sm text-slate-300">
+          You are signed in as {role}, but attempted to access {requestedView} view.
+        </p>
+        <button
+          onClick={() => router.replace(`/?view=${role}`)}
+          className="mt-4 rounded-md bg-slate-700 px-3 py-2 text-sm"
+        >
+          Go to my view
+        </button>
+      </main>
+    );
+  }
+
+  return (
+    <main className="mx-auto min-h-screen max-w-md bg-slate-950 p-4 text-slate-100">
+      <header className="sticky top-0 z-10 rounded-xl bg-slate-900/95 p-3 backdrop-blur">
+        <h1 className="text-lg font-semibold">Production Review Hub</h1>
+        <p className="text-xs text-slate-300">
+          Logged in as {userName} ({role})
+        </p>
+        <button
+          onClick={() => {
+            clearSession();
+            setRole(null);
+            setUserName("");
+            setStatus("");
+            router.replace("/");
+          }}
+          className="mt-2 rounded-md bg-slate-700 px-2 py-1 text-xs"
+        >
+          Switch role
+        </button>
+      </header>
+
+      {status ? <p className="mt-3 rounded-lg bg-slate-800 p-2 text-xs">{status}</p> : null}
+
+      <section className="mt-4 space-y-4">
+        {groupedVideos.days.map((day) => (
+          <article key={day} className="rounded-xl border border-slate-800 bg-slate-900 p-3">
+            <h2 className="text-base font-semibold">{day}</h2>
+            <div className="mt-3 space-y-3">
+              {(groupedVideos.groups[day] ?? []).map((video) => {
+                const latest = video.links[0];
+                const draft = drafts[video.id] ?? {
+                  version: "",
+                  frameUrl: "",
+                  note: "",
+                  customMessage: "",
+                };
+
+                return (
+                  <div key={video.id} className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="font-medium">
+                          {video.emoji} {video.title}
+                        </p>
+                        <p className="text-xs text-slate-400">Goes live {video.goesLive}</p>
+                      </div>
+                      {latest ? (
+                        <span className="rounded-full bg-emerald-700 px-2 py-1 text-[10px] font-semibold">
+                          Link {latest.version} ready
+                        </span>
+                      ) : null}
+                    </div>
+
+                    {video.links.length > 0 ? (
+                      <div className="mt-3 space-y-2">
+                        {video.links.map((link) => (
+                          <div key={link.id} className="rounded-md bg-slate-900 p-2">
+                            <p className="text-xs font-semibold">{link.version}</p>
+                            <a
+                              href={link.frameUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-blue-300 underline"
+                            >
+                              Open Frame.io
+                            </a>
+                            <p className="mt-1 text-[11px] text-slate-400">
+                              {link.customMessage || link.note}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-3 text-xs text-slate-500">No links posted yet.</p>
+                    )}
+
+                    {role === "editor" ? (
+                      <div className="mt-3 space-y-2 rounded-md border border-slate-800 p-2">
+                        <p className="text-xs font-semibold text-slate-300">Post new review link</p>
+                        <input
+                          value={draft.version}
+                          onChange={(event) =>
+                            setDrafts((current) => ({
+                              ...current,
+                              [video.id]: { ...draft, version: event.target.value },
+                            }))
+                          }
+                          placeholder="Version (ex: v1)"
+                          className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+                        />
+                        <input
+                          value={draft.frameUrl}
+                          onChange={(event) =>
+                            setDrafts((current) => ({
+                              ...current,
+                              [video.id]: { ...draft, frameUrl: event.target.value },
+                            }))
+                          }
+                          placeholder="Frame.io link"
+                          className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+                        />
+                        <textarea
+                          value={draft.customMessage}
+                          onChange={(event) =>
+                            setDrafts((current) => ({
+                              ...current,
+                              [video.id]: { ...draft, customMessage: event.target.value },
+                            }))
+                          }
+                          placeholder="Notes for admin"
+                          className="h-16 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+                        />
+                        <button
+                          onClick={() => postLink(video)}
+                          disabled={busyVideoId === video.id}
+                          className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-semibold disabled:opacity-70"
+                        >
+                          {busyVideoId === video.id ? "Saving..." : "Record link"}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </article>
+        ))}
+      </section>
+
+      {role === "admin" ? (
+        <section className="mt-4 space-y-4 rounded-xl border border-amber-500/40 bg-slate-900 p-3">
+          <h2 className="text-base font-semibold text-amber-300">Admin Console</h2>
+
+          <div className="rounded-md bg-slate-950 p-2">
+            <p className="text-xs font-semibold">Team Contacts</p>
+            <div className="mt-2 grid grid-cols-3 gap-2">
+              <input
+                value={newContact.name}
+                onChange={(event) => setNewContact({ ...newContact, name: event.target.value })}
+                placeholder="Name"
+                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+              />
+              <input
+                value={newContact.email}
+                onChange={(event) => setNewContact({ ...newContact, email: event.target.value })}
+                placeholder="Email"
+                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+              />
+              <select
+                value={newContact.team}
+                onChange={(event) => setNewContact({ ...newContact, team: event.target.value as TeamType })}
+                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+              >
+                <option value="client">client</option>
+                <option value="ogilvy">ogilvy</option>
+                <option value="editor">editor</option>
+              </select>
+            </div>
+            <button onClick={addContact} className="mt-2 rounded-md bg-amber-600 px-2 py-1 text-xs font-semibold">
+              Add contact
+            </button>
+
+            <div className="mt-3 space-y-1">
+              {data.contacts.map((contact) => (
+                <div key={contact.id} className="flex items-center justify-between rounded bg-slate-900 px-2 py-1 text-xs">
+                  <span>
+                    {contact.name} - {contact.team} - {contact.email}
+                  </span>
+                  <button onClick={() => removeContact(contact.id)} className="text-red-300 underline">
+                    remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-md bg-slate-950 p-2">
+            <p className="text-xs font-semibold">Logged-in users</p>
+            {loginActivity.length === 0 ? (
+              <p className="mt-2 text-xs text-slate-400">No logins tracked yet.</p>
+            ) : (
+              <div className="mt-2 space-y-1">
+                {loginActivity
+                  .slice()
+                  .sort((a, b) => b.lastLoginAt.localeCompare(a.lastLoginAt))
+                  .map((entry) => (
+                    <div key={entry.id} className="rounded bg-slate-900 px-2 py-1 text-xs">
+                      <p className="font-medium">{entry.name} ({entry.role})</p>
+                      <p className="text-slate-400">{entry.email || "No email provided"}</p>
+                      <p className="text-slate-500">Last login: {new Date(entry.lastLoginAt).toLocaleString()} • {entry.loginCount} total</p>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-md bg-slate-950 p-2">
+            <p className="text-xs font-semibold">Send targeted reminder blast</p>
+            <select
+              value={adminBlastVideoId}
+              onChange={(event) => {
+                const nextVideoId = event.target.value;
+                setAdminBlastVideoId(nextVideoId);
+                const selected = data.videos.find((item) => item.id === nextVideoId);
+                setAdminBlastLinkId(selected?.links[0]?.id ?? "");
+              }}
+              className="mt-2 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+            >
+              <option value="">Select video</option>
+              {data.videos.map((video) => (
+                <option key={video.id} value={video.id}>
+                  {video.title} - live {video.goesLive || video.day}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={adminBlastLinkId}
+              onChange={(event) => setAdminBlastLinkId(event.target.value)}
+              className="mt-2 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+            >
+              <option value="">Select link version</option>
+              {(selectedBlastVideo?.links ?? []).map((link) => (
+                <option key={link.id} value={link.id}>
+                  {link.version} - {new Date(link.postedAt).toLocaleString()}
+                </option>
+              ))}
+            </select>
+
+            <div className="mt-2 flex gap-2 text-[11px]">
+              {(["client", "ogilvy", "editor"] as TeamType[]).map((team) => (
+                <label key={team} className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={adminBlastTeams.includes(team)}
+                    onChange={() =>
+                      setAdminBlastTeams((current) =>
+                        current.includes(team)
+                          ? current.filter((item) => item !== team)
+                          : [...current, team],
+                      )
+                    }
+                  />
+                  {team}
+                </label>
+              ))}
+            </div>
+            <textarea
+              value={adminBlastMessage}
+              onChange={(event) => setAdminBlastMessage(event.target.value)}
+              className="mt-2 h-16 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+            />
+            <button onClick={sendAdminBlast} className="mt-2 rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold">
+              Send blast
+            </button>
+          </div>
+
+          <div className="rounded-md bg-slate-950 p-2">
+            <p className="text-xs font-semibold">Schedule maintenance</p>
+            <select
+              value={adminEditVideoId}
+              onChange={(event) => loadVideoIntoAdminEditor(event.target.value)}
+              className="mt-2 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+            >
+              <option value="">Select video</option>
+              {data.videos.map((video) => (
+                <option key={video.id} value={video.id}>
+                  {video.title} - {video.day} {video.time}
+                </option>
+              ))}
+            </select>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <select
+                value={adminEditDay}
+                onChange={(event) => setAdminEditDay(event.target.value)}
+                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+              >
+                {dayOrder.map((day) => (
+                  <option key={day} value={day}>
+                    {day}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={adminEditTime}
+                onChange={(event) => setAdminEditTime(event.target.value)}
+                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+                placeholder="Time"
+              />
+            </div>
+            <textarea
+              value={adminEditNote}
+              onChange={(event) => setAdminEditNote(event.target.value)}
+              className="mt-2 h-16 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+              placeholder="Schedule note"
+            />
+            <button onClick={saveVideoEdits} className="mt-2 rounded-md bg-violet-600 px-3 py-2 text-xs font-semibold">
+              Save schedule edits
+            </button>
+          </div>
+        </section>
+      ) : null}
+    </main>
+  );
+}
