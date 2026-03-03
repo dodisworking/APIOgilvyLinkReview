@@ -123,6 +123,34 @@ export const saveReviewLink = async (params: {
   });
 };
 
+export const updateReviewLinkRecord = async (params: {
+  linkId: string;
+  version: string;
+  frameUrl: string;
+  note: string;
+  customMessage: string;
+}) => {
+  if (!isSupabaseConfigured || !supabase) {
+    return;
+  }
+  await supabase
+    .from("review_links")
+    .update({
+      version_label: params.version,
+      frameio_url: params.frameUrl,
+      notes: params.note,
+      custom_message: params.customMessage,
+    })
+    .eq("id", params.linkId);
+};
+
+export const deleteReviewLinkRecord = async (linkId: string) => {
+  if (!isSupabaseConfigured || !supabase) {
+    return;
+  }
+  await supabase.from("review_links").delete().eq("id", linkId);
+};
+
 export const addContactRecord = async (contact: Contact) => {
   if (!isSupabaseConfigured || !supabase) {
     return;

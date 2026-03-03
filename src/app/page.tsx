@@ -4,11 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   addContactRecord,
+  deleteReviewLinkRecord,
   fetchAppData,
   removeContactRecord,
   saveNotificationLog,
   saveReviewLink,
   seedLocalStorageIfMissing,
+  updateReviewLinkRecord,
   updateVideoRecord,
 } from "@/lib/data-service";
 import {
@@ -45,6 +47,8 @@ interface NotifyPayload {
   subject: string;
   videoTitle: string;
   frameUrl: string;
+  videoId?: string;
+  allLinksUrl?: string;
   version: string;
   customMessage: string;
   postedBy: string;
@@ -69,6 +73,7 @@ export default function Home() {
   const router = useRouter();
   const [role, setRole] = useState<Role | null>(null);
   const [requestedView, setRequestedView] = useState<Role | null>(null);
+  const [requestedVideoId, setRequestedVideoId] = useState<string | null>(null);
   const [userName, setUserName] = useState("");
   const [loginName, setLoginName] = useState("");
   const [loginEmail, setLoginEmail] = useState("");
@@ -109,6 +114,13 @@ export default function Home() {
   const [adminEditNote, setAdminEditNote] = useState("");
   const [busyVideoId, setBusyVideoId] = useState("");
   const [loginActivity, setLoginActivity] = useState<LoginActivityEntry[]>([]);
+  const [editingLinkId, setEditingLinkId] = useState<string | null>(null);
+  const [editLinkDraft, setEditLinkDraft] = useState({
+    version: "",
+    frameUrl: "",
+    note: "",
+    customMessage: "",
+  });
 
   useEffect(() => {
     const session = loadSession();
@@ -122,10 +134,11 @@ export default function Home() {
       setLoginName(session.name);
     }
     if (typeof window !== "undefined") {
-      const view = new URLSearchParams(window.location.search).get(
-        "view",
-      ) as Role | null;
+      const search = new URLSearchParams(window.location.search);
+      const view = search.get("view") as Role | null;
+      const video = search.get("video");
       setRequestedView(view);
+      setRequestedVideoId(video);
     }
   }, []);
 
@@ -141,7 +154,11 @@ export default function Home() {
     }
 
     const groups: Record<string, VideoItem[]> = {};
-    const liveVideos = data.videos.filter((video) => Boolean(video.goesLive));
+    const liveVideos = data.videos.filter(
+      (video) =>
+        Boolean(video.goesLive) &&
+        (!requestedVideoId || video.id === requestedVideoId),
+    );
 
     for (const video of liveVideos) {
       const liveDay = video.goesLive as string;
@@ -155,7 +172,7 @@ export default function Home() {
       (a, b) => liveDayOrder.indexOf(a) - liveDayOrder.indexOf(b),
     );
     return { days, groups };
-  }, [data]);
+  }, [data, requestedVideoId]);
 
   const selectedBlastVideo =
     data?.videos.find((item) => item.id === adminBlastVideoId) ?? null;
@@ -163,6 +180,7 @@ export default function Home() {
     selectedBlastVideo?.links.find((item) => item.id === adminBlastLinkId) ??
     selectedBlastVideo?.links[0] ??
     null;
+  const canManageLinks = role === "editor" || role === "admin";
 
   const loginAs = (nextRole: Role) => {
     const cleanName = loginName.trim();
@@ -255,6 +273,92 @@ export default function Home() {
     }
   };
 
+  const startEditingLink = (link: VideoItem["links"][number]) => {
+    setEditingLinkId(link.id);
+    setEditLinkDraft({
+      version: link.version,
+      frameUrl: link.frameUrl,
+      note: link.note,
+      customMessage: link.customMessage,
+    });
+  };
+
+  const cancelEditingLink = () => {
+    setEditingLinkId(null);
+    setEditLinkDraft({ version: "", frameUrl: "", note: "", customMessage: "" });
+  };
+
+  const saveEditedLink = async (video: VideoItem, linkId: string) => {
+    if (!data) {
+      return;
+    }
+    if (!editLinkDraft.version.trim() || !editLinkDraft.frameUrl.trim()) {
+      setStatus("Version and Frame.io link are required.");
+      return;
+    }
+
+    const nextVideos = data.videos.map((item) => {
+      if (item.id !== video.id) {
+        return item;
+      }
+      return {
+        ...item,
+        links: item.links.map((link) =>
+          link.id === linkId
+            ? {
+                ...link,
+                version: editLinkDraft.version.trim(),
+                frameUrl: editLinkDraft.frameUrl.trim(),
+                note: editLinkDraft.note,
+                customMessage: editLinkDraft.customMessage,
+              }
+            : link,
+        ),
+      };
+    });
+
+    const nextData = { ...data, videos: nextVideos };
+    setData(nextData);
+    saveAppData(nextData);
+
+    await updateReviewLinkRecord({
+      linkId,
+      version: editLinkDraft.version.trim(),
+      frameUrl: editLinkDraft.frameUrl.trim(),
+      note: editLinkDraft.note,
+      customMessage: editLinkDraft.customMessage,
+    });
+
+    setStatus("Link updated.");
+    cancelEditingLink();
+  };
+
+  const deleteLink = async (video: VideoItem, linkId: string) => {
+    if (!data) {
+      return;
+    }
+
+    const nextVideos = data.videos.map((item) => {
+      if (item.id !== video.id) {
+        return item;
+      }
+      return {
+        ...item,
+        links: item.links.filter((link) => link.id !== linkId),
+      };
+    });
+
+    const nextData = { ...data, videos: nextVideos };
+    setData(nextData);
+    saveAppData(nextData);
+    await deleteReviewLinkRecord(linkId);
+
+    if (editingLinkId === linkId) {
+      cancelEditingLink();
+    }
+    setStatus("Link deleted.");
+  };
+
   const addContact = () => {
     if (!data) {
       return;
@@ -313,6 +417,11 @@ export default function Home() {
         subject: `${selectedBlastVideo.title} - ${selectedBlastLink.version} Ready for Review`,
         videoTitle: selectedBlastVideo.title,
         frameUrl: selectedBlastLink.frameUrl,
+        videoId: selectedBlastVideo.id,
+        allLinksUrl:
+          typeof window !== "undefined"
+            ? `${window.location.origin}/?video=${encodeURIComponent(selectedBlastVideo.id)}`
+            : undefined,
         version: selectedBlastLink.version,
         customMessage: adminBlastMessage,
         postedBy: userName || "Admin",
@@ -512,18 +621,88 @@ export default function Home() {
                       <div className="mt-3 space-y-2">
                         {video.links.map((link) => (
                           <div key={link.id} className="rounded-md bg-slate-900 p-2">
-                            <p className="text-xs font-semibold">{link.version}</p>
-                            <a
-                              href={link.frameUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-xs text-blue-300 underline"
-                            >
-                              Open Frame.io
-                            </a>
-                            <p className="mt-1 text-[11px] text-slate-400">
-                              {link.customMessage || link.note}
-                            </p>
+                            {editingLinkId === link.id ? (
+                              <div className="space-y-2">
+                                <input
+                                  value={editLinkDraft.version}
+                                  onChange={(event) =>
+                                    setEditLinkDraft((current) => ({
+                                      ...current,
+                                      version: event.target.value,
+                                    }))
+                                  }
+                                  placeholder="Version"
+                                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                />
+                                <input
+                                  value={editLinkDraft.frameUrl}
+                                  onChange={(event) =>
+                                    setEditLinkDraft((current) => ({
+                                      ...current,
+                                      frameUrl: event.target.value,
+                                    }))
+                                  }
+                                  placeholder="Frame.io link"
+                                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                />
+                                <textarea
+                                  value={editLinkDraft.customMessage}
+                                  onChange={(event) =>
+                                    setEditLinkDraft((current) => ({
+                                      ...current,
+                                      customMessage: event.target.value,
+                                    }))
+                                  }
+                                  placeholder="Notes"
+                                  className="h-16 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                />
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => saveEditedLink(video, link.id)}
+                                    className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-semibold"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    onClick={cancelEditingLink}
+                                    className="rounded-md bg-slate-700 px-2 py-1 text-xs"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <>
+                                <p className="text-xs font-semibold">{link.version}</p>
+                                <a
+                                  href={link.frameUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-xs text-blue-300 underline"
+                                >
+                                  Open Frame.io
+                                </a>
+                                <p className="mt-1 text-[11px] text-slate-400">
+                                  {link.customMessage || link.note}
+                                </p>
+                                {canManageLinks ? (
+                                  <div className="mt-2 flex gap-2">
+                                    <button
+                                      onClick={() => startEditingLink(link)}
+                                      className="rounded-md bg-blue-700 px-2 py-1 text-xs"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      onClick={() => deleteLink(video, link.id)}
+                                      className="rounded-md bg-red-700 px-2 py-1 text-xs"
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                ) : null}
+                              </>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -531,7 +710,7 @@ export default function Home() {
                       <p className="mt-3 text-xs text-slate-500">No links posted yet.</p>
                     )}
 
-                    {role === "editor" ? (
+                    {role === "editor" || role === "admin" ? (
                       <div className="mt-3 space-y-2 rounded-md border border-slate-800 p-2">
                         <p className="text-xs font-semibold text-slate-300">Post new review link</p>
                         <input

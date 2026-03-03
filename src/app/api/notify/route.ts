@@ -6,6 +6,8 @@ interface NotifyBody {
   subject: string;
   videoTitle: string;
   frameUrl: string;
+  videoId?: string;
+  allLinksUrl?: string;
   version: string;
   customMessage: string;
   postedBy: string;
@@ -19,6 +21,8 @@ export async function POST(request: Request) {
       subject,
       videoTitle,
       frameUrl,
+      videoId,
+      allLinksUrl,
       version,
       customMessage,
       postedBy,
@@ -59,13 +63,21 @@ export async function POST(request: Request) {
       },
     });
 
+    const requestOrigin = new URL(request.url).origin;
+    const reviewAllLinksUrl =
+      allLinksUrl ||
+      (videoId
+        ? `${requestOrigin}/?video=${encodeURIComponent(videoId)}`
+        : requestOrigin);
+
     const html = `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
         <h2>Link Ready for Review</h2>
         <p><strong>Video:</strong> ${videoTitle}</p>
         <p><strong>Version:</strong> ${version}</p>
         <p><strong>Posted by:</strong> ${postedBy}</p>
-        <p><strong>Review Link:</strong> <a href="${frameUrl}">${frameUrl}</a></p>
+        <p><strong>Direct Review Link:</strong> <a href="${frameUrl}">${frameUrl}</a></p>
+        <p><strong>Review All Links:</strong> <a href="${reviewAllLinksUrl}">${reviewAllLinksUrl}</a></p>
         <p><strong>Message:</strong> ${customMessage || "Please review when available."}</p>
       </div>
     `;
