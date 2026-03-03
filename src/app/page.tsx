@@ -147,21 +147,23 @@ export default function Home() {
     }
 
     const groups: Record<string, VideoItem[]> = {};
-    const liveVideos = requestedVideoId
+    const videosToShow = requestedVideoId
       ? data.videos.filter((video) => video.id === requestedVideoId)
-      : data.videos.filter((video) => Boolean(video.goesLive));
+      : data.videos;
 
-    for (const video of liveVideos) {
-      const liveDay = video.goesLive || video.day || "Unscheduled";
-      if (!groups[liveDay]) {
-        groups[liveDay] = [];
+    for (const video of videosToShow) {
+      const displayDay = video.goesLive || video.day || "Unscheduled";
+      if (!groups[displayDay]) {
+        groups[displayDay] = [];
       }
-      groups[liveDay].push(video);
+      groups[displayDay].push(video);
     }
 
-    const days = Object.keys(groups).sort(
-      (a, b) => liveDayOrder.indexOf(a) - liveDayOrder.indexOf(b),
-    );
+    const days = Object.keys(groups).sort((a, b) => {
+      const aIndex = liveDayOrder.includes(a) ? liveDayOrder.indexOf(a) : 999;
+      const bIndex = liveDayOrder.includes(b) ? liveDayOrder.indexOf(b) : 999;
+      return aIndex - bIndex;
+    });
     return { days, groups };
   }, [data, requestedVideoId]);
 
