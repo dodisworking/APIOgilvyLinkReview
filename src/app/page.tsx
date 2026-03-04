@@ -70,7 +70,7 @@ const sendEmailBlast = async (payload: NotifyPayload) => {
 };
 
 export default function Home() {
-  const adminPassword = process.env.NEXT_PUBLIC_ADMIN_PASSWORD ?? "123";
+  const adminPassword = "123";
   const [entered, setEntered] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [data, setData] = useState<AppData | null>(null);
