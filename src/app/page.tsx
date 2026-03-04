@@ -109,6 +109,7 @@ export default function Home() {
   const [adminReminderDueAt, setAdminReminderDueAt] = useState("");
 
   const [busyVideoId, setBusyVideoId] = useState("");
+  const [savedVideoId, setSavedVideoId] = useState<string | null>(null);
   const [openComposerVideoId, setOpenComposerVideoId] = useState<string | null>(null);
   const [editingLinkId, setEditingLinkId] = useState<string | null>(null);
   const [postDistributionPrompt, setPostDistributionPrompt] = useState<{
@@ -235,6 +236,7 @@ export default function Home() {
     }
 
     setBusyVideoId(video.id);
+    setSavedVideoId(null);
     setStatus("");
     const autoVersion = getNextLinkVersion(video.links);
     const postedAt = new Date().toISOString();
@@ -277,6 +279,7 @@ export default function Home() {
       setStatus(
         `Posted ${autoVersion} for ${video.title}.`,
       );
+      setSavedVideoId(video.id);
       setDrafts((current) => ({
         ...current,
         [video.id]: {
@@ -286,7 +289,6 @@ export default function Home() {
           commentsDueAt: "",
         },
       }));
-      setOpenComposerVideoId(null);
       setPostDistributionPrompt({
         videoId: video.id,
         videoTitle: video.title,
@@ -303,6 +305,9 @@ export default function Home() {
       setStatus(`Link save failed: ${message}`);
     } finally {
       setBusyVideoId("");
+      setTimeout(() => {
+        setSavedVideoId((current) => (current === video.id ? null : current));
+      }, 2000);
     }
   };
 
@@ -896,8 +901,20 @@ export default function Home() {
                           disabled={busyVideoId === video.id}
                           className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-semibold disabled:opacity-70"
                         >
-                          {busyVideoId === video.id ? "Saving..." : "Record link"}
+                          {busyVideoId === video.id ? (
+                            <span className="inline-flex items-center gap-2">
+                              <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                              Saving...
+                            </span>
+                          ) : (
+                            "Record link"
+                          )}
                         </button>
+                        {savedVideoId === video.id ? (
+                          <p className="text-xs font-semibold text-emerald-300">
+                            Saved. You can add another link now.
+                          </p>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
