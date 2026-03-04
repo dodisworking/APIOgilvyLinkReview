@@ -73,7 +73,6 @@ export default function Home() {
   const adminPassword = process.env.NEXT_PUBLIC_ADMIN_PASSWORD ?? "123";
   const [entered, setEntered] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [requestedVideoId, setRequestedVideoId] = useState<string | null>(null);
   const [data, setData] = useState<AppData | null>(null);
   const [status, setStatus] = useState("");
   const [newContact, setNewContact] = useState<{
@@ -123,11 +122,6 @@ export default function Home() {
   useEffect(() => {
     seedLocalStorageIfMissing();
     fetchAppData().then((appData) => setData(appData));
-    if (typeof window !== "undefined") {
-      const search = new URLSearchParams(window.location.search);
-      const video = search.get("video");
-      setRequestedVideoId(video);
-    }
   }, []);
 
   useEffect(() => {
@@ -142,9 +136,7 @@ export default function Home() {
     }
 
     const groups: Record<string, VideoItem[]> = {};
-    const videosToShow = requestedVideoId
-      ? data.videos.filter((video) => video.id === requestedVideoId)
-      : data.videos;
+    const videosToShow = data.videos;
 
     for (const video of videosToShow) {
       const shootDay = video.day || "Unscheduled";
@@ -169,7 +161,7 @@ export default function Home() {
     }
 
     return { days, groups };
-  }, [data, requestedVideoId]);
+  }, [data]);
 
   const selectedBlastVideo =
     data?.videos.find((item) => item.id === adminBlastVideoId) ?? null;
