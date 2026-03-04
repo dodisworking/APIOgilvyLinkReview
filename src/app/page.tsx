@@ -172,6 +172,21 @@ export default function Home() {
   const formatDue = (value?: string) =>
     value ? new Date(value).toLocaleString() : "Not set";
 
+  const handleAdminAccess = () => {
+    if (isAdmin) {
+      setIsAdmin(false);
+      setStatus("Admin mode disabled.");
+      return;
+    }
+    const password = window.prompt("Admin password");
+    if (password === adminPassword) {
+      setIsAdmin(true);
+      setStatus("Admin mode enabled.");
+    } else {
+      setStatus("Wrong admin password.");
+    }
+  };
+
   const roleContacts = (teams: TeamType[]) => {
     if (!data) {
       return [];
@@ -510,6 +525,13 @@ export default function Home() {
 
   return (
     <main className="mx-auto min-h-screen max-w-md bg-slate-950 p-4 text-slate-100">
+      <button
+        onClick={handleAdminAccess}
+        className="fixed right-3 top-3 z-30 rounded-full bg-slate-800/70 px-2 py-1 text-[10px] text-slate-300 opacity-50 transition hover:opacity-100"
+        aria-label="Admin access"
+      >
+        {isAdmin ? "admin on" : "•••"}
+      </button>
       <div className="mb-3 flex justify-center">
         <Image
           src="/arnold-palmer-mastercard.png"
@@ -525,25 +547,6 @@ export default function Home() {
         <p className="text-xs text-slate-300">
           Full link history + posting dates for every video
         </p>
-        <button
-          onClick={() => {
-            if (isAdmin) {
-              setIsAdmin(false);
-              setStatus("Admin mode disabled.");
-              return;
-            }
-            const password = window.prompt("Admin password");
-            if (password === adminPassword) {
-              setIsAdmin(true);
-              setStatus("Admin mode enabled.");
-            } else {
-              setStatus("Wrong admin password.");
-            }
-          }}
-          className="mt-2 rounded-md bg-slate-700 px-2 py-1 text-xs"
-        >
-          {isAdmin ? "Exit admin mode" : "Admin mode"}
-        </button>
       </header>
 
       {status ? <p className="mt-3 rounded-lg bg-slate-800 p-2 text-xs">{status}</p> : null}
