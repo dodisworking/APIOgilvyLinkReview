@@ -17,7 +17,6 @@ import { isSupabaseConfigured } from "@/lib/supabase";
 import {
   AppData,
   Contact,
-  TeamType,
   VideoItem,
 } from "@/types";
 
@@ -78,11 +77,9 @@ export default function Home() {
   const [newContact, setNewContact] = useState<{
     name: string;
     email: string;
-    team: TeamType;
   }>({
     name: "",
     email: "",
-    team: "client",
   });
 
   const [drafts, setDrafts] = useState<
@@ -99,10 +96,8 @@ export default function Home() {
 
   const [adminBlastVideoId, setAdminBlastVideoId] = useState("");
   const [adminBlastLinkId, setAdminBlastLinkId] = useState("");
-  const [adminBlastTeams, setAdminBlastTeams] = useState<TeamType[]>([
-    "client",
-    "ogilvy",
-  ]);
+  const [selectedRecipientIds, setSelectedRecipientIds] = useState<string[]>([]);
+  const [adminBlastSubject, setAdminBlastSubject] = useState("");
   const [adminBlastMessage, setAdminBlastMessage] = useState(
     "Please review as soon as possible.",
   );
@@ -120,10 +115,10 @@ export default function Home() {
     frameUrl: string;
     commentsDueAt?: string;
   } | null>(null);
-  const [postDistributionTeams, setPostDistributionTeams] = useState<TeamType[]>([
-    "client",
-    "ogilvy",
-  ]);
+  const [postSelectedRecipientIds, setPostSelectedRecipientIds] = useState<string[]>(
+    [],
+  );
+  const [postDistributionSubject, setPostDistributionSubject] = useState("");
   const [postDistributionMessage, setPostDistributionMessage] = useState(
     "Hey team, we have a new posting. Please review and share feedback by the requested deadline.",
   );
@@ -144,6 +139,10 @@ export default function Home() {
   useEffect(() => {
     if (data) {
       saveAppData(data);
+      const allIds = data.contacts.map((contact) => contact.id);
+      setSelectedRecipientIds((current) =>
+        current.length > 0 ? current.filter((id) => allIds.includes(id)) : allIds,
+      );
     }
   }, [data]);
 
@@ -218,12 +217,13 @@ export default function Home() {
     }
   };
 
-  const roleContacts = (teams: TeamType[]) => {
-    if (!data) {
-      return [];
+  useEffect(() => {
+    if (selectedBlastVideo && selectedBlastLink) {
+      setAdminBlastSubject(
+        `${selectedBlastVideo.title} - ${selectedBlastLink.version} Ready for Review`,
+      );
     }
-    return data.contacts.filter((contact) => teams.includes(contact.team));
-  };
+  }, [selectedBlastVideo, selectedBlastLink]);
 
   const postLink = async (video: VideoItem) => {
     if (!data) {
@@ -297,6 +297,10 @@ export default function Home() {
         frameUrl: newLink.frameUrl,
         commentsDueAt: newLink.commentsDueAt,
       });
+      setPostDistributionSubject(
+        `${video.title} - ${newLink.version} Ready for Review`,
+      );
+      setPostSelectedRecipientIds(data.contacts.map((contact) => contact.id));
       setPostDistributionMessage(
         `Hey team, we have a new posting for ${video.title} (${newLink.version}). Please share feedback by ${formatDue(newLink.commentsDueAt)}.`,
       );
@@ -418,13 +422,14 @@ export default function Home() {
       id: crypto.randomUUID(),
       name: newContact.name.trim(),
       email: newContact.email.trim(),
-      team: newContact.team,
+      team: "client",
     };
     const nextData = { ...data, contacts: [...data.contacts, contact] };
     setData(nextData);
     saveAppData(nextData);
     addContactRecord(contact);
-    setNewContact({ name: "", email: "", team: "client" });
+    setSelectedRecipientIds((current) => [...current, contact.id]);
+    setNewContact({ name: "", email: "" });
     setStatus("Contact added.");
   };
 
@@ -439,6 +444,7 @@ export default function Home() {
     setData(nextData);
     saveAppData(nextData);
     removeContactRecord(id);
+    setSelectedRecipientIds((current) => current.filter((item) => item !== id));
     setStatus("Contact removed.");
   };
 
@@ -452,16 +458,18 @@ export default function Home() {
       return;
     }
 
-    const recipients = roleContacts(adminBlastTeams).map((contact) => contact.email);
+    const recipients = data.contacts
+      .filter((contact) => selectedRecipientIds.includes(contact.id))
+      .map((contact) => contact.email);
     if (recipients.length === 0) {
-      setStatus("No recipients found in selected teams.");
+      setStatus("No recipients selected.");
       return;
     }
 
     try {
       await sendEmailBlast({
         recipients,
-        subject: `${selectedBlastVideo.title} - ${selectedBlastLink.version} Ready for Review`,
+        subject: adminBlastSubject || `${selectedBlastVideo.title} - ${selectedBlastLink.version}`,
         videoTitle: selectedBlastVideo.title,
         frameUrl: selectedBlastLink.frameUrl,
         videoId: selectedBlastVideo.id,
@@ -479,7 +487,7 @@ export default function Home() {
         videoId: selectedBlastVideo.id,
         version: selectedBlastLink.version,
         recipients,
-        teams: adminBlastTeams,
+        teams: [],
         subject: `${selectedBlastVideo.title} - Link Ready for Review`,
         message: adminBlastMessage,
       });
@@ -496,9 +504,11 @@ export default function Home() {
       setStatus("Choose a video and link version first.");
       return;
     }
-    const recipients = roleContacts(adminBlastTeams).map((contact) => contact.email);
+    const recipients = data.contacts
+      .filter((contact) => selectedRecipientIds.includes(contact.id))
+      .map((contact) => contact.email);
     if (recipients.length === 0) {
-      setStatus("No recipients found in selected teams.");
+      setStatus("No recipients selected.");
       return;
     }
 
@@ -568,16 +578,23 @@ export default function Home() {
     if (!postDistributionPrompt) {
       return;
     }
-    const recipients = roleContacts(postDistributionTeams).map((contact) => contact.email);
+    if (!data) {
+      return;
+    }
+    const recipients = data.contacts
+      .filter((contact) => postSelectedRecipientIds.includes(contact.id))
+      .map((contact) => contact.email);
     if (recipients.length === 0) {
-      setStatus("No recipients found in selected teams.");
+      setStatus("No recipients selected.");
       return;
     }
 
     try {
       await sendEmailBlast({
         recipients,
-        subject: `${postDistributionPrompt.videoTitle} - ${postDistributionPrompt.version} Ready for Review`,
+        subject:
+          postDistributionSubject ||
+          `${postDistributionPrompt.videoTitle} - ${postDistributionPrompt.version}`,
         videoTitle: postDistributionPrompt.videoTitle,
         frameUrl: postDistributionPrompt.frameUrl,
         videoId: postDistributionPrompt.videoId,
@@ -595,7 +612,7 @@ export default function Home() {
         videoId: postDistributionPrompt.videoId,
         version: postDistributionPrompt.version,
         recipients,
-        teams: postDistributionTeams,
+        teams: [],
         subject: `${postDistributionPrompt.videoTitle} - Link Ready for Review`,
         message: postDistributionMessage,
       });
@@ -929,15 +946,9 @@ export default function Home() {
                 placeholder="Email"
                 className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
               />
-              <select
-                value={newContact.team}
-                onChange={(event) => setNewContact({ ...newContact, team: event.target.value as TeamType })}
-                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
-              >
-                <option value="client">client</option>
-                <option value="ogilvy">ogilvy</option>
-                <option value="editor">editor</option>
-              </select>
+              <div className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-400">
+                Saved to email list
+              </div>
             </div>
             <button onClick={addContact} className="mt-2 rounded-md bg-amber-600 px-2 py-1 text-xs font-semibold">
               Add to distribution list
@@ -990,24 +1001,30 @@ export default function Home() {
               ))}
             </select>
 
-            <div className="mt-2 flex gap-2 text-[11px]">
-              {(["client", "ogilvy", "editor"] as TeamType[]).map((team) => (
-                <label key={team} className="flex items-center gap-1">
+            <div className="mt-2 space-y-1 rounded-md border border-slate-800 bg-slate-900 p-2 text-[11px]">
+              {data.contacts.map((contact) => (
+                <label key={contact.id} className="flex items-center gap-2">
                   <input
                     type="checkbox"
-                    checked={adminBlastTeams.includes(team)}
+                    checked={selectedRecipientIds.includes(contact.id)}
                     onChange={() =>
-                      setAdminBlastTeams((current) =>
-                        current.includes(team)
-                          ? current.filter((item) => item !== team)
-                          : [...current, team],
+                      setSelectedRecipientIds((current) =>
+                        current.includes(contact.id)
+                          ? current.filter((id) => id !== contact.id)
+                          : [...current, contact.id],
                       )
                     }
                   />
-                  {team}
+                  {contact.name} ({contact.email})
                 </label>
               ))}
             </div>
+            <input
+              value={adminBlastSubject}
+              onChange={(event) => setAdminBlastSubject(event.target.value)}
+              placeholder="Email subject"
+              className="mt-2 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+            />
             <textarea
               value={adminBlastMessage}
               onChange={(event) => setAdminBlastMessage(event.target.value)}
@@ -1046,24 +1063,30 @@ export default function Home() {
               {postDistributionPrompt.videoTitle} • Ask by{" "}
               {formatDue(postDistributionPrompt.commentsDueAt)}
             </p>
-            <div className="mt-2 flex gap-2 text-[11px]">
-              {(["client", "ogilvy", "editor"] as TeamType[]).map((team) => (
-                <label key={team} className="flex items-center gap-1">
+            <div className="mt-2 space-y-1 rounded-md border border-slate-800 bg-slate-950 p-2 text-[11px]">
+              {data.contacts.map((contact) => (
+                <label key={contact.id} className="flex items-center gap-2">
                   <input
                     type="checkbox"
-                    checked={postDistributionTeams.includes(team)}
+                    checked={postSelectedRecipientIds.includes(contact.id)}
                     onChange={() =>
-                      setPostDistributionTeams((current) =>
-                        current.includes(team)
-                          ? current.filter((item) => item !== team)
-                          : [...current, team],
+                      setPostSelectedRecipientIds((current) =>
+                        current.includes(contact.id)
+                          ? current.filter((id) => id !== contact.id)
+                          : [...current, contact.id],
                       )
                     }
                   />
-                  {team}
+                  {contact.name} ({contact.email})
                 </label>
               ))}
             </div>
+            <input
+              value={postDistributionSubject}
+              onChange={(event) => setPostDistributionSubject(event.target.value)}
+              placeholder="Email subject"
+              className="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+            />
             <textarea
               value={postDistributionMessage}
               onChange={(event) => setPostDistributionMessage(event.target.value)}
