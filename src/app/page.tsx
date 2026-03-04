@@ -89,7 +89,6 @@ export default function Home() {
     Record<
       string,
       {
-        version: string;
         frameUrl: string;
         note: string;
         customMessage: string;
@@ -110,7 +109,24 @@ export default function Home() {
   const [adminReminderDueAt, setAdminReminderDueAt] = useState("");
 
   const [busyVideoId, setBusyVideoId] = useState("");
+  const [openComposerVideoId, setOpenComposerVideoId] = useState<string | null>(null);
   const [editingLinkId, setEditingLinkId] = useState<string | null>(null);
+  const [postDistributionPrompt, setPostDistributionPrompt] = useState<{
+    videoId: string;
+    videoTitle: string;
+    linkId: string;
+    version: string;
+    frameUrl: string;
+    commentsDueAt?: string;
+  } | null>(null);
+  const [postDistributionTeams, setPostDistributionTeams] = useState<TeamType[]>([
+    "client",
+    "ogilvy",
+  ]);
+  const [postDistributionMessage, setPostDistributionMessage] = useState(
+    "Hey team, we have a new posting. Please review and share feedback by the requested deadline.",
+  );
+  const [aiMessageBusy, setAiMessageBusy] = useState(false);
   const [editLinkDraft, setEditLinkDraft] = useState({
     version: "",
     frameUrl: "",
@@ -178,6 +194,13 @@ export default function Home() {
   const formatPosted = (value: string) => new Date(value).toLocaleString();
   const isRecentLink = (postedAt: string) =>
     Date.now() - new Date(postedAt).getTime() <= 1000 * 60 * 60 * 24;
+  const getNextLinkVersion = (links: VideoItem["links"]) => {
+    const numericVersions = links
+      .map((link) => Number(link.version.replace(/[^0-9]/g, "")))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const next = numericVersions.length ? Math.max(...numericVersions) + 1 : 1;
+    return `Link #${next}`;
+  };
 
   const handleAdminAccess = () => {
     if (isAdmin) {
@@ -206,13 +229,25 @@ export default function Home() {
       return;
     }
     const draft = drafts[video.id];
-    if (!draft?.version || !draft?.frameUrl) {
-      setStatus("Version and Frame.io link are required.");
+    if (!draft?.frameUrl) {
+      setStatus("Frame.io link is required.");
       return;
     }
 
     setBusyVideoId(video.id);
     setStatus("");
+    const autoVersion = getNextLinkVersion(video.links);
+    const postedAt = new Date().toISOString();
+    const newLink = {
+      id: crypto.randomUUID(),
+      version: autoVersion,
+      frameUrl: draft.frameUrl,
+      note: draft.note,
+      customMessage: draft.customMessage,
+      commentsDueAt: draft.commentsDueAt || undefined,
+      postedBy: "Admin",
+      postedAt,
+    };
 
     const updatedVideos = data.videos.map((item) => {
       if (item.id !== video.id) {
@@ -220,19 +255,7 @@ export default function Home() {
       }
       return {
         ...item,
-        links: [
-          {
-            id: crypto.randomUUID(),
-            version: draft.version,
-            frameUrl: draft.frameUrl,
-            note: draft.note,
-            customMessage: draft.customMessage,
-            commentsDueAt: draft.commentsDueAt || undefined,
-            postedBy: "Admin",
-            postedAt: new Date().toISOString(),
-          },
-          ...item.links,
-        ],
+        links: [newLink, ...item.links],
       };
     });
 
@@ -243,7 +266,7 @@ export default function Home() {
     try {
       await saveReviewLink({
         videoId: video.id,
-        version: draft.version,
+        version: autoVersion,
         frameUrl: draft.frameUrl,
         note: draft.note,
         customMessage: draft.customMessage,
@@ -252,18 +275,29 @@ export default function Home() {
       });
 
       setStatus(
-        `Recorded ${draft.version} for ${video.title}.`,
+        `Posted ${autoVersion} for ${video.title}.`,
       );
       setDrafts((current) => ({
         ...current,
         [video.id]: {
-          version: "",
           frameUrl: "",
           note: "",
           customMessage: "",
           commentsDueAt: "",
         },
       }));
+      setOpenComposerVideoId(null);
+      setPostDistributionPrompt({
+        videoId: video.id,
+        videoTitle: video.title,
+        linkId: newLink.id,
+        version: newLink.version,
+        frameUrl: newLink.frameUrl,
+        commentsDueAt: newLink.commentsDueAt,
+      });
+      setPostDistributionMessage(
+        `Hey team, we have a new posting for ${video.title} (${newLink.version}). Please share feedback by ${formatDue(newLink.commentsDueAt)}.`,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to save link.";
       setStatus(`Link save failed: ${message}`);
@@ -489,6 +523,86 @@ export default function Home() {
     }
   };
 
+  const requestAiMessage = async (mode: "suggest" | "polish") => {
+    if (!postDistributionPrompt) {
+      return;
+    }
+    setAiMessageBusy(true);
+    setStatus("");
+    try {
+      const response = await fetch("/api/ai-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode,
+          message: postDistributionMessage,
+          videoTitle: postDistributionPrompt.videoTitle,
+          version: postDistributionPrompt.version,
+          frameUrl: postDistributionPrompt.frameUrl,
+          allLinksUrl:
+            typeof window !== "undefined"
+              ? `${window.location.origin}/?video=${encodeURIComponent(postDistributionPrompt.videoId)}`
+              : "",
+          dueText: postDistributionPrompt.commentsDueAt || "",
+        }),
+      });
+      const result = (await response.json()) as { message?: string; error?: string };
+      if (!response.ok || !result.message) {
+        throw new Error(result.error ?? "AI message failed.");
+      }
+      setPostDistributionMessage(result.message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "AI message failed.";
+      setStatus(message);
+    } finally {
+      setAiMessageBusy(false);
+    }
+  };
+
+  const sendPostDistribution = async () => {
+    if (!postDistributionPrompt) {
+      return;
+    }
+    const recipients = roleContacts(postDistributionTeams).map((contact) => contact.email);
+    if (recipients.length === 0) {
+      setStatus("No recipients found in selected teams.");
+      return;
+    }
+
+    try {
+      await sendEmailBlast({
+        recipients,
+        subject: `${postDistributionPrompt.videoTitle} - ${postDistributionPrompt.version} Ready for Review`,
+        videoTitle: postDistributionPrompt.videoTitle,
+        frameUrl: postDistributionPrompt.frameUrl,
+        videoId: postDistributionPrompt.videoId,
+        allLinksUrl:
+          typeof window !== "undefined"
+            ? `${window.location.origin}/?video=${encodeURIComponent(postDistributionPrompt.videoId)}`
+            : undefined,
+        version: postDistributionPrompt.version,
+        customMessage: postDistributionMessage,
+        commentsDueAt: postDistributionPrompt.commentsDueAt,
+        postedBy: "Admin",
+      });
+
+      await saveNotificationLog({
+        videoId: postDistributionPrompt.videoId,
+        version: postDistributionPrompt.version,
+        recipients,
+        teams: postDistributionTeams,
+        subject: `${postDistributionPrompt.videoTitle} - Link Ready for Review`,
+        message: postDistributionMessage,
+      });
+
+      setStatus("Posted and sent to distribution list.");
+      setPostDistributionPrompt(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Email blast failed.";
+      setStatus(`Distribution send failed: ${message}`);
+    }
+  };
+
   if (!data) {
     return <main className="p-6 text-sm">Loading app...</main>;
   }
@@ -583,7 +697,6 @@ export default function Home() {
             <div className="mt-3 space-y-3">
               {(groupedSchedule.groups[day] ?? []).map((video) => {
                 const draft = drafts[video.id] ?? {
-                  version: "",
                   frameUrl: "",
                   note: "",
                   customMessage: "",
@@ -601,6 +714,19 @@ export default function Home() {
                           Goes live: {video.goesLive || "TBD"}
                         </p>
                       </div>
+                      {isAdmin ? (
+                        <button
+                          onClick={() =>
+                            setOpenComposerVideoId((current) =>
+                              current === video.id ? null : video.id,
+                            )
+                          }
+                          className="rounded-full bg-emerald-600 px-2 py-1 text-xs font-bold text-white"
+                          title="Add link"
+                        >
+                          +
+                        </button>
+                      ) : null}
                     </div>
 
                     {video.links.length > 0 ? (
@@ -684,6 +810,9 @@ export default function Home() {
                                   ) : null}
                                 </div>
                                 <p className="text-xs font-semibold">{link.version}</p>
+                                <p className="text-[11px] text-slate-400">
+                                  Posted at: {formatPosted(link.postedAt)}
+                                </p>
                                 <a
                                   href={link.frameUrl}
                                   target="_blank"
@@ -723,22 +852,11 @@ export default function Home() {
                       <p className="mt-3 text-xs text-slate-500">No links posted yet.</p>
                     )}
 
-                    {isAdmin ? (
+                    {isAdmin && openComposerVideoId === video.id ? (
                       <div className="mt-3 space-y-2 rounded-md border border-slate-800 p-2">
                         <p className="text-xs font-semibold text-slate-300">
-                          Admin: post new review link
+                          + Add review link (auto labels Link #1, Link #2...)
                         </p>
-                        <input
-                          value={draft.version}
-                          onChange={(event) =>
-                            setDrafts((current) => ({
-                              ...current,
-                              [video.id]: { ...draft, version: event.target.value },
-                            }))
-                          }
-                          placeholder="Version (ex: v1)"
-                          className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
-                        />
                         <input
                           value={draft.frameUrl}
                           onChange={(event) =>
@@ -770,7 +888,7 @@ export default function Home() {
                               [video.id]: { ...draft, commentsDueAt: event.target.value },
                             }))
                           }
-                          placeholder="Feedback due (EOD Friday or specific date/time)"
+                          placeholder="Ask by when next round of feedback? (EOD Friday or time/date)"
                           className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
                         />
                         <button
@@ -914,6 +1032,74 @@ export default function Home() {
             </button>
           </div>
         </section>
+      ) : null}
+
+      {postDistributionPrompt ? (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-4">
+            <p className="text-sm font-semibold text-emerald-300">
+              Link posted: {postDistributionPrompt.version}
+            </p>
+            <p className="mt-1 text-xs text-slate-300">
+              Send to distribution list now?
+            </p>
+            <p className="mt-1 text-[11px] text-slate-400">
+              {postDistributionPrompt.videoTitle} • Ask by{" "}
+              {formatDue(postDistributionPrompt.commentsDueAt)}
+            </p>
+            <div className="mt-2 flex gap-2 text-[11px]">
+              {(["client", "ogilvy", "editor"] as TeamType[]).map((team) => (
+                <label key={team} className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={postDistributionTeams.includes(team)}
+                    onChange={() =>
+                      setPostDistributionTeams((current) =>
+                        current.includes(team)
+                          ? current.filter((item) => item !== team)
+                          : [...current, team],
+                      )
+                    }
+                  />
+                  {team}
+                </label>
+              ))}
+            </div>
+            <textarea
+              value={postDistributionMessage}
+              onChange={(event) => setPostDistributionMessage(event.target.value)}
+              className="mt-2 h-24 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+            />
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                onClick={() => requestAiMessage("suggest")}
+                className="rounded-md bg-violet-700 px-2 py-1 text-xs"
+                disabled={aiMessageBusy}
+              >
+                AI suggest
+              </button>
+              <button
+                onClick={() => requestAiMessage("polish")}
+                className="rounded-md bg-indigo-700 px-2 py-1 text-xs"
+                disabled={aiMessageBusy}
+              >
+                AI polish my message
+              </button>
+              <button
+                onClick={sendPostDistribution}
+                className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-semibold"
+              >
+                Send now
+              </button>
+              <button
+                onClick={() => setPostDistributionPrompt(null)}
+                className="rounded-md bg-slate-700 px-2 py-1 text-xs"
+              >
+                Skip for now
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </main>
   );
