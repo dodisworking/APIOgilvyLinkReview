@@ -170,7 +170,14 @@ export default function Home() {
     selectedBlastVideo?.links[0] ??
     null;
   const formatDue = (value?: string) =>
-    value ? new Date(value).toLocaleString() : "Not set";
+    value
+      ? Number.isNaN(new Date(value).getTime())
+        ? value
+        : new Date(value).toLocaleString()
+      : "Not set";
+  const formatPosted = (value: string) => new Date(value).toLocaleString();
+  const isRecentLink = (postedAt: string) =>
+    Date.now() - new Date(postedAt).getTime() <= 1000 * 60 * 60 * 24;
 
   const handleAdminAccess = () => {
     if (isAdmin) {
@@ -580,7 +587,7 @@ export default function Home() {
 
                     {video.links.length > 0 ? (
                       <div className="mt-3 space-y-2">
-                        {video.links.map((link) => (
+                        {video.links.map((link, index) => (
                           <div key={link.id} className="rounded-md bg-slate-900 p-2">
                             {editingLinkId === link.id ? (
                               <div className="space-y-2">
@@ -618,7 +625,7 @@ export default function Home() {
                                   className="h-16 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
                                 />
                                 <input
-                                  type="datetime-local"
+                                  type="text"
                                   value={editLinkDraft.commentsDueAt}
                                   onChange={(event) =>
                                     setEditLinkDraft((current) => ({
@@ -626,6 +633,7 @@ export default function Home() {
                                       commentsDueAt: event.target.value,
                                     }))
                                   }
+                                  placeholder="Feedback due (EOD Friday or specific date/time)"
                                   className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
                                 />
                                 <div className="flex gap-2">
@@ -645,6 +653,18 @@ export default function Home() {
                               </div>
                             ) : (
                               <>
+                                <div className="mb-1 flex gap-2">
+                                  {index === 0 ? (
+                                    <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                                      NEWEST
+                                    </span>
+                                  ) : null}
+                                  {isRecentLink(link.postedAt) ? (
+                                    <span className="rounded-full bg-green-700 px-2 py-0.5 text-[10px] font-semibold text-white">
+                                      Posted recently at {formatPosted(link.postedAt)}
+                                    </span>
+                                  ) : null}
+                                </div>
                                 <p className="text-xs font-semibold">{link.version}</p>
                                 <a
                                   href={link.frameUrl}
@@ -658,7 +678,7 @@ export default function Home() {
                                   {link.customMessage || link.note}
                                 </p>
                                 <p className="text-[11px] text-amber-300">
-                                  Comments due: {formatDue(link.commentsDueAt)}
+                                  Feedback due: {formatDue(link.commentsDueAt)}
                                 </p>
                                 {isAdmin ? (
                                   <div className="mt-2 flex gap-2">
@@ -724,7 +744,7 @@ export default function Home() {
                           className="h-16 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
                         />
                         <input
-                          type="datetime-local"
+                          type="text"
                           value={draft.commentsDueAt}
                           onChange={(event) =>
                             setDrafts((current) => ({
@@ -732,6 +752,7 @@ export default function Home() {
                               [video.id]: { ...draft, commentsDueAt: event.target.value },
                             }))
                           }
+                          placeholder="Feedback due (EOD Friday or specific date/time)"
                           className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
                         />
                         <button
@@ -858,9 +879,10 @@ export default function Home() {
               className="mt-2 h-16 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
             />
             <input
-              type="datetime-local"
+              type="text"
               value={adminReminderDueAt}
               onChange={(event) => setAdminReminderDueAt(event.target.value)}
+              placeholder="Reminder deadline (EOD Friday or specific date/time)"
               className="mt-2 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
             />
             <button onClick={sendAdminBlast} className="mt-2 rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold">

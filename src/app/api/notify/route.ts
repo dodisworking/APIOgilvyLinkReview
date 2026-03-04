@@ -71,6 +71,11 @@ export async function POST(request: Request) {
       (videoId
         ? `${requestOrigin}/?video=${encodeURIComponent(videoId)}`
         : requestOrigin);
+    const dueDisplay = commentsDueAt
+      ? Number.isNaN(new Date(commentsDueAt).getTime())
+        ? commentsDueAt
+        : new Date(commentsDueAt).toLocaleString()
+      : "Not set";
 
     const html = `
       <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
@@ -80,7 +85,7 @@ export async function POST(request: Request) {
         <p><strong>Posted by:</strong> ${postedBy}</p>
         <p><strong>Direct Review Link:</strong> <a href="${frameUrl}">${frameUrl}</a></p>
         <p><strong>Review All Links:</strong> <a href="${reviewAllLinksUrl}">${reviewAllLinksUrl}</a></p>
-        <p><strong>Comments Due By:</strong> ${commentsDueAt ? new Date(commentsDueAt).toLocaleString() : "Not set"}</p>
+        <p><strong>Feedback Due By:</strong> ${dueDisplay}</p>
         <p><strong>Message:</strong> ${customMessage || "Please review when available."}</p>
       </div>
     `;
