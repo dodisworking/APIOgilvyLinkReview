@@ -496,13 +496,22 @@ export default function Home() {
   if (!entered) {
     return (
       <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center bg-slate-950 p-6 text-slate-100">
-        <div className="mb-6 flex justify-center">
+        <div className="mb-6 flex items-center justify-center gap-3">
           <Image
             src="/arnold-palmer-mastercard.png"
             alt="Arnold Palmer Invitational presented by Mastercard"
-            width={220}
-            height={220}
-            className="h-auto w-[220px] rounded-md"
+            width={170}
+            height={170}
+            className="h-auto w-[170px] rounded-md"
+            priority
+          />
+          <span className="text-xl font-semibold text-slate-300">x</span>
+          <Image
+            src="/ogilvy-logo.png"
+            alt="Ogilvy"
+            width={150}
+            height={70}
+            className="h-auto w-[150px] rounded-md border border-slate-700 bg-black p-1"
             priority
           />
         </div>
@@ -539,13 +548,22 @@ export default function Home() {
       >
         {isAdmin ? "admin on" : "•••"}
       </button>
-      <div className="mb-3 flex justify-center">
+      <div className="mb-3 flex items-center justify-center gap-2">
         <Image
           src="/arnold-palmer-mastercard.png"
           alt="Arnold Palmer Invitational presented by Mastercard"
-          width={180}
-          height={180}
-          className="h-auto w-[180px] rounded-md"
+          width={140}
+          height={140}
+          className="h-auto w-[140px] rounded-md"
+          priority
+        />
+        <span className="text-lg font-semibold text-slate-300">x</span>
+        <Image
+          src="/ogilvy-logo.png"
+          alt="Ogilvy"
+          width={120}
+          height={56}
+          className="h-auto w-[120px] rounded-md border border-slate-700 bg-black p-1"
           priority
         />
       </div>
