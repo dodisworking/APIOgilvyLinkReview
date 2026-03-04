@@ -191,7 +191,14 @@ export default function Home() {
         ? value
         : new Date(value).toLocaleString()
       : "Not set";
-  const formatPosted = (value: string) => new Date(value).toLocaleString();
+  const formatPosted = (value: string) =>
+    new Date(value).toLocaleString(undefined, {
+      weekday: "long",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
   const isRecentLink = (postedAt: string) =>
     Date.now() - new Date(postedAt).getTime() <= 1000 * 60 * 60 * 24;
   const getNextLinkVersion = (links: VideoItem["links"]) => {
@@ -803,7 +810,7 @@ export default function Home() {
                               <>
                                 <div className="mb-1 flex gap-2">
                                   {index === 0 ? (
-                                    <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                                    <span className="rounded-full bg-green-600 px-2 py-0.5 text-[10px] font-bold text-white">
                                       NEWEST
                                     </span>
                                   ) : null}
@@ -814,7 +821,7 @@ export default function Home() {
                                   ) : null}
                                 </div>
                                 <p className="text-xs font-semibold">{link.version}</p>
-                                <p className="text-[11px] text-slate-400">
+                                <p className="text-[11px] text-yellow-300">
                                   Posted at: {formatPosted(link.postedAt)}
                                 </p>
                                 <a
@@ -828,7 +835,7 @@ export default function Home() {
                                 <p className="mt-1 text-[11px] text-slate-400">
                                   {link.customMessage || link.note}
                                 </p>
-                                <p className="text-[11px] text-amber-300">
+                                <p className="text-[11px] text-red-300">
                                   Feedback due: {formatDue(link.commentsDueAt)}
                                 </p>
                                 {isAdmin ? (
