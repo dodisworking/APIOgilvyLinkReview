@@ -22,13 +22,24 @@ import {
 } from "@/types";
 
 const dayOrder = [
-  "Monday",
   "Tuesday",
   "Wednesday",
   "Thursday",
   "Friday",
-  "Saturday",
-  "Sunday",
+];
+
+const videoOrderById = [
+  "on-the-back-nine",
+  "behind-the-business",
+  "pulse-check-pt1",
+  "ahead-of-curve-1",
+  "course-management-for-business",
+  "ahead-of-curve-2",
+  "pulse-check-pt2",
+  "pop-up-city-1",
+  "pop-up-city-2",
+  "unlocked-power-partnership",
+  "executive-advantage",
 ];
 
 interface NotifyPayload {
@@ -125,36 +136,11 @@ export default function Home() {
     }
   }, [data]);
 
-  const groupedByDeliverDay = useMemo(() => {
+  const groupedSchedule = useMemo(() => {
     if (!data) {
       return { days: [], groups: {} as Record<string, VideoItem[]> };
     }
 
-    const groups: Record<string, VideoItem[]> = {};
-    const videosToShow = requestedVideoId
-      ? data.videos.filter((video) => video.id === requestedVideoId)
-      : data.videos;
-
-    for (const video of videosToShow) {
-      const displayDay = video.goesLive || video.day || "Unscheduled";
-      if (!groups[displayDay]) {
-        groups[displayDay] = [];
-      }
-      groups[displayDay].push(video);
-    }
-
-    const days = Object.keys(groups).sort((a, b) => {
-      const aIndex = dayOrder.includes(a) ? dayOrder.indexOf(a) : 999;
-      const bIndex = dayOrder.includes(b) ? dayOrder.indexOf(b) : 999;
-      return aIndex - bIndex;
-    });
-    return { days, groups };
-  }, [data, requestedVideoId]);
-
-  const groupedByShootDay = useMemo(() => {
-    if (!data) {
-      return { days: [], groups: {} as Record<string, VideoItem[]> };
-    }
     const groups: Record<string, VideoItem[]> = {};
     const videosToShow = requestedVideoId
       ? data.videos.filter((video) => video.id === requestedVideoId)
@@ -173,6 +159,15 @@ export default function Home() {
       const bIndex = dayOrder.includes(b) ? dayOrder.indexOf(b) : 999;
       return aIndex - bIndex;
     });
+
+    for (const day of days) {
+      groups[day].sort((a, b) => {
+        const aIndex = videoOrderById.indexOf(a.id);
+        const bIndex = videoOrderById.indexOf(b.id);
+        return (aIndex === -1 ? 999 : aIndex) - (bIndex === -1 ? 999 : bIndex);
+      });
+    }
+
     return { days, groups };
   }, [data, requestedVideoId]);
 
@@ -561,31 +556,12 @@ export default function Home() {
 
       {status ? <p className="mt-3 rounded-lg bg-slate-800 p-2 text-xs">{status}</p> : null}
 
-      <section className="mt-4 rounded-xl border border-cyan-500/30 bg-slate-900 p-3">
-        <h2 className="text-base font-semibold text-cyan-200">What We Are Shooting</h2>
-        <div className="mt-3 space-y-3">
-          {groupedByShootDay.days.map((day) => (
-            <article key={day} className="rounded-lg border border-slate-800 bg-slate-950 p-3">
-              <h3 className="text-sm font-semibold">{day}</h3>
-              <div className="mt-2 space-y-1 text-xs text-slate-300">
-                {(groupedByShootDay.groups[day] ?? []).map((video) => (
-                  <p key={video.id}>
-                    {video.emoji} {video.title} - shoots {video.day} {video.time}, delivers{" "}
-                    {video.goesLive || "TBD"}
-                  </p>
-                ))}
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
-
       <section className="mt-4 space-y-4">
-        {groupedByDeliverDay.days.map((day) => (
+        {groupedSchedule.days.map((day) => (
           <article key={day} className="rounded-xl border border-slate-800 bg-slate-900 p-3">
             <h2 className="text-base font-semibold">{day}</h2>
             <div className="mt-3 space-y-3">
-              {(groupedByDeliverDay.groups[day] ?? []).map((video) => {
+              {(groupedSchedule.groups[day] ?? []).map((video) => {
                 const draft = drafts[video.id] ?? {
                   version: "",
                   frameUrl: "",
@@ -602,7 +578,7 @@ export default function Home() {
                           {video.emoji} {video.title}
                         </p>
                         <p className="text-xs text-slate-400">
-                          Shoots {video.day} {video.time} • Delivers {video.goesLive || "TBD"}
+                          Goes live: {video.goesLive || "TBD"}
                         </p>
                       </div>
                     </div>
