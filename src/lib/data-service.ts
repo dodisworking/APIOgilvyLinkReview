@@ -1,5 +1,13 @@
 import { seededAppData } from "@/data/seed";
-import { AppData, Contact, ReviewLinkVersion, Role, TeamType, VideoItem } from "@/types";
+import {
+  AppData,
+  Contact,
+  ManualTrackerStatus,
+  ReviewLinkVersion,
+  Role,
+  TeamType,
+  VideoItem,
+} from "@/types";
 import { loadAppData, saveAppData } from "@/lib/storage";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
@@ -12,6 +20,8 @@ interface DbVideo {
   schedule_type: VideoItem["scheduleType"];
   note: string | null;
   goes_live: string | null;
+  is_approved: boolean | null;
+  manual_status: ManualTrackerStatus | null;
 }
 
 interface DbReviewLink {
@@ -30,6 +40,13 @@ const fallbackRead = (): AppData => loadAppData();
 const fallbackWrite = (data: AppData) => saveAppData(data);
 
 const DUE_TAG_REGEX = /^\[\[DUE:([^\]]+)\]\]\s*/;
+const VIDEO_OVERRIDES: Record<string, Partial<Pick<VideoItem, "title" | "emoji">>> = {
+  "pulse-check-pt1-record": { emoji: "🫀" },
+  "ahead-of-curve-1-record": { title: "Ahead of the Curve Part 1" },
+  "ahead-of-curve-2-record": { title: "Ahead of the Curve Part 2", emoji: "📈" },
+  "pop-up-city-1-deliver": { title: "The Pop Up City Part 1" },
+  "pop-up-city-2-deliver": { title: "The Pop Up City Part 2" },
+};
 
 const splitDueFromNotes = (notes: string | null): { note: string; commentsDueAt?: string } => {
   const raw = notes ?? "";
@@ -49,6 +66,46 @@ const combineDueAndNotes = (note: string, commentsDueAt?: string): string => {
     return cleanNote;
   }
   return `[[DUE:${commentsDueAt}]] ${cleanNote}`.trim();
+};
+
+const getVideoOverride = (video: VideoItem): Partial<Pick<VideoItem, "title" | "emoji">> => {
+  const exact = VIDEO_OVERRIDES[video.id];
+  if (exact) {
+    return exact;
+  }
+
+  const key = `${video.id} ${video.title}`.toLowerCase();
+  const byPattern: Partial<Pick<VideoItem, "title" | "emoji">> = {};
+
+  if (key.includes("pulse-check-pt1") || key.includes("pulse check pt 1")) {
+    byPattern.emoji = "🫀";
+  }
+
+  if (key.includes("ahead-of-curve-2") || key.includes("ahead of the curve 2")) {
+    byPattern.emoji = "📈";
+  }
+
+  return byPattern;
+};
+
+const applyVideoOverrides = (data: AppData): { data: AppData; changed: boolean } => {
+  let changed = false;
+  const videos = data.videos.map((video) => {
+    const override = getVideoOverride(video);
+    if (!override.title && !override.emoji) {
+      return video;
+    }
+    const next = {
+      ...video,
+      title: override.title ?? video.title,
+      emoji: override.emoji ?? video.emoji,
+    };
+    if (next.title !== video.title || next.emoji !== video.emoji) {
+      changed = true;
+    }
+    return next;
+  });
+  return { data: { ...data, videos }, changed };
 };
 
 export const seedLocalStorageIfMissing = () => {
@@ -77,7 +134,16 @@ export const loadRoleFromProfile = async (
 
 export const fetchAppData = async (): Promise<AppData> => {
   if (!isSupabaseConfigured || !supabase) {
-    return fallbackRead();
+    const localData = fallbackRead();
+    const normalized = applyVideoOverrides(localData);
+    const withoutCutdowns = {
+      ...normalized.data,
+      videos: normalized.data.videos.filter((v) => !v.id.startsWith("api-cut-")),
+    };
+    if (normalized.changed || withoutCutdowns.videos.length !== normalized.data.videos.length) {
+      fallbackWrite(withoutCutdowns);
+    }
+    return withoutCutdowns;
   }
 
   const [videosRes, linksRes, contactsRes] = await Promise.all([
@@ -87,7 +153,16 @@ export const fetchAppData = async (): Promise<AppData> => {
   ]);
 
   if (videosRes.error || linksRes.error || contactsRes.error) {
-    return fallbackRead();
+    const localData = fallbackRead();
+    const normalized = applyVideoOverrides(localData);
+    const withoutCutdowns = {
+      ...normalized.data,
+      videos: normalized.data.videos.filter((v) => !v.id.startsWith("api-cut-")),
+    };
+    if (normalized.changed || withoutCutdowns.videos.length !== normalized.data.videos.length) {
+      fallbackWrite(withoutCutdowns);
+    }
+    return withoutCutdowns;
   }
 
   const linkMap = new Map<string, ReviewLinkVersion[]>();
@@ -107,22 +182,26 @@ export const fetchAppData = async (): Promise<AppData> => {
     linkMap.set(link.video_id, current);
   });
 
-  const videos: VideoItem[] = (videosRes.data as DbVideo[]).map((video) => ({
-    id: video.id,
-    title: video.title,
-    emoji: video.emoji,
-    day: video.day,
-    time: video.time,
-    scheduleType: video.schedule_type,
-    note: video.note ?? undefined,
-    goesLive: video.goes_live ?? undefined,
-    links: linkMap.get(video.id) ?? [],
-  }));
+  const videos: VideoItem[] = (videosRes.data as DbVideo[])
+    .filter((video) => !video.id.startsWith("api-cut-"))
+    .map((video) => ({
+      id: video.id,
+      title: video.title,
+      emoji: video.emoji,
+      day: video.day,
+      time: video.time,
+      scheduleType: video.schedule_type,
+      note: video.note ?? undefined,
+      goesLive: video.goes_live ?? undefined,
+      isApproved: Boolean(video.is_approved),
+      manualStatus: video.manual_status ?? undefined,
+      links: linkMap.get(video.id) ?? [],
+    }));
 
   const contacts: Contact[] = (contactsRes.data as Contact[]) ?? [];
-  const appData = { videos, contacts };
-  fallbackWrite(appData);
-  return appData;
+  const normalized = applyVideoOverrides({ videos, contacts });
+  fallbackWrite(normalized.data);
+  return normalized.data;
 };
 
 export const saveReviewLink = async (params: {
@@ -232,4 +311,21 @@ export const updateVideoRecord = async (
       goes_live: updates.goesLive,
     })
     .eq("id", videoId);
+};
+
+export const updateVideoWorkflowState = async (params: {
+  videoId: string;
+  isApproved?: boolean;
+  manualStatus?: ManualTrackerStatus | null;
+}) => {
+  if (!isSupabaseConfigured || !supabase) {
+    return;
+  }
+  await supabase
+    .from("videos")
+    .update({
+      is_approved: params.isApproved,
+      manual_status: params.manualStatus ?? null,
+    })
+    .eq("id", params.videoId);
 };

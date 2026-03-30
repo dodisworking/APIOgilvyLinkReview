@@ -3,6 +3,11 @@ export type Role = "editor" | "client" | "ogilvy" | "admin";
 export type TeamType = "editor" | "client" | "ogilvy";
 
 export type ScheduleType = "record" | "deliver" | "review" | "go_live";
+export type ManualTrackerStatus =
+  | "waiting to shoot"
+  | "shot"
+  | "editing"
+  | "waiting on approval";
 
 export interface ReviewLinkVersion {
   id: string;
@@ -24,6 +29,8 @@ export interface VideoItem {
   scheduleType: ScheduleType;
   note?: string;
   goesLive?: string;
+  isApproved?: boolean;
+  manualStatus?: ManualTrackerStatus;
   links: ReviewLinkVersion[];
 }
 
@@ -46,4 +53,13 @@ export interface LoginActivityEntry {
 export interface AppData {
   videos: VideoItem[];
   contacts: Contact[];
+}
+
+/** API cutdown workspace: spots + optional batch-level Frame links (local storage). */
+export type CutdownBatchId = "1" | "2" | "3";
+
+export interface CutdownAppData {
+  videos: VideoItem[];
+  contacts: Contact[];
+  batchLinks: Record<CutdownBatchId, ReviewLinkVersion[]>;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import {
   addContactRecord,
@@ -10,13 +10,19 @@ import {
   saveNotificationLog,
   saveReviewLink,
   seedLocalStorageIfMissing,
+  updateVideoWorkflowState,
   updateReviewLinkRecord,
 } from "@/lib/data-service";
+import { ApiCutdownsView } from "@/components/ApiCutdownsView";
+import { CUTDOWN_BATCH_IDS } from "@/lib/api-cutdowns";
+import { loadCutdownAppData, saveCutdownAppData } from "@/lib/cutdown-storage";
 import { saveAppData } from "@/lib/storage";
-import { isSupabaseConfigured } from "@/lib/supabase";
 import {
   AppData,
   Contact,
+  CutdownAppData,
+  CutdownBatchId,
+  ManualTrackerStatus,
   VideoItem,
 } from "@/types";
 
@@ -41,6 +47,68 @@ const videoOrderById = [
   "executive-advantage",
 ];
 
+const ownerByVideoId: Record<string, "IZZY" | "MAX"> = {
+  "on-the-back-nine-review": "IZZY",
+  "on-the-back-nine-record": "IZZY",
+  "behind-the-business-review": "MAX",
+  "behind-the-business-record": "MAX",
+  "pulse-check-pt1-record": "IZZY",
+  "ahead-of-curve-1-review": "IZZY",
+  "ahead-of-curve-1-record": "IZZY",
+  "course-management-business-review": "MAX",
+  "course-management-business-record": "MAX",
+  "ahead-of-curve-2-review": "IZZY",
+  "ahead-of-curve-2-record": "IZZY",
+  "pulse-check-pt2-review": "IZZY",
+  "pulse-check-pt2-deliver": "IZZY",
+  "pop-up-city-1-review": "MAX",
+  "pop-up-city-1-deliver": "MAX",
+  "pop-up-city-2-review": "IZZY",
+  "pop-up-city-2-deliver": "IZZY",
+  "unlocked-power-partnership": "IZZY",
+  "executive-advantage": "MAX",
+};
+
+const getOwnerName = (video: VideoItem): "IZZY" | "MAX" | null => {
+  if (ownerByVideoId[video.id]) {
+    return ownerByVideoId[video.id];
+  }
+
+  const id = video.id.toLowerCase();
+  const title = video.title.toLowerCase();
+  const key = `${id} ${title}`;
+
+  if (
+    key.includes("on-the-back-nine") ||
+    key.includes("on the back nine") ||
+    key.includes("pulse-check") ||
+    key.includes("pulse check") ||
+    key.includes("ahead-of-curve") ||
+    key.includes("ahead of the curve") ||
+    key.includes("pop-up-city-2") ||
+    key.includes("pop up city part 2") ||
+    key.includes("unlocked-power-partnership") ||
+    key.includes("unlocked the power of partnership")
+  ) {
+    return "IZZY";
+  }
+
+  if (
+    key.includes("behind-the-business") ||
+    key.includes("behind the business") ||
+    key.includes("course-management") ||
+    key.includes("course management") ||
+    key.includes("pop-up-city-1") ||
+    key.includes("pop up city part 1") ||
+    key.includes("executive-advantage") ||
+    key.includes("executive advantage")
+  ) {
+    return "MAX";
+  }
+
+  return null;
+};
+
 interface NotifyPayload {
   recipients: string[];
   subject: string;
@@ -53,6 +121,24 @@ interface NotifyPayload {
   commentsDueAt?: string;
   postedBy: string;
 }
+
+type TrackerStatus = ManualTrackerStatus | "approved";
+type AppPanel = "status" | "schedule" | "links" | null;
+
+const STATUS_OVERRIDE_KEY = "production-review-status-overrides-v1";
+const APPROVALS_KEY = "production-review-approvals-v1";
+type HubMode = "live" | "cutdowns";
+const HUB_MODE_KEY = "production-review-hub-mode-v1";
+
+const weekdayToIndex: Record<string, number> = {
+  sunday: 0,
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6,
+};
 
 const sendEmailBlast = async (payload: NotifyPayload) => {
   const response = await fetch("/api/notify", {
@@ -74,6 +160,8 @@ export default function Home() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [data, setData] = useState<AppData | null>(null);
   const [status, setStatus] = useState("");
+  const [showAdminPrompt, setShowAdminPrompt] = useState(false);
+  const [adminPasswordInput, setAdminPasswordInput] = useState("");
   const [newContact, setNewContact] = useState<{
     name: string;
     email: string;
@@ -106,6 +194,18 @@ export default function Home() {
   const [busyVideoId, setBusyVideoId] = useState("");
   const [savedVideoId, setSavedVideoId] = useState<string | null>(null);
   const [openComposerVideoId, setOpenComposerVideoId] = useState<string | null>(null);
+  const [activePanel, setActivePanel] = useState<AppPanel>(null);
+  const [hubMode, setHubMode] = useState<HubMode>("live");
+  const [cutdownData, setCutdownData] = useState<CutdownAppData | null>(null);
+  const [openCutdownBatchComposer, setOpenCutdownBatchComposer] =
+    useState<CutdownBatchId | null>(null);
+  const [statusOverrides, setStatusOverrides] = useState<Record<string, ManualTrackerStatus>>(
+    {},
+  );
+  const [approvedByVideoId, setApprovedByVideoId] = useState<Record<string, boolean>>({});
+  const [expandedHistoryByVideo, setExpandedHistoryByVideo] = useState<
+    Record<string, boolean>
+  >({});
   const [editingLinkId, setEditingLinkId] = useState<string | null>(null);
   const [postDistributionPrompt, setPostDistributionPrompt] = useState<{
     videoId: string;
@@ -123,6 +223,7 @@ export default function Home() {
     "Hey team, we have a new posting. Please review and share feedback by the requested deadline.",
   );
   const [aiMessageBusy, setAiMessageBusy] = useState(false);
+  const teamNameInputRef = useRef<HTMLInputElement | null>(null);
   const [editLinkDraft, setEditLinkDraft] = useState({
     version: "",
     frameUrl: "",
@@ -137,14 +238,103 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    setCutdownData(loadCutdownAppData());
+  }, []);
+
+  useEffect(() => {
+    if (cutdownData) {
+      saveCutdownAppData(cutdownData);
+    }
+  }, [cutdownData]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const raw = window.localStorage.getItem(HUB_MODE_KEY);
+    if (raw === "live" || raw === "cutdowns") {
+      setHubMode(raw);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(HUB_MODE_KEY, hubMode);
+  }, [hubMode]);
+
+  useEffect(() => {
     if (data) {
       saveAppData(data);
       const allIds = data.contacts.map((contact) => contact.id);
       setSelectedRecipientIds((current) =>
         current.length > 0 ? current.filter((id) => allIds.includes(id)) : allIds,
       );
+      const nextApprovals = Object.fromEntries(
+        data.videos.map((video) => [video.id, Boolean(video.isApproved)]),
+      ) as Record<string, boolean>;
+      const nextManualStatuses = Object.fromEntries(
+        data.videos
+          .filter((video) => Boolean(video.manualStatus))
+          .map((video) => [video.id, video.manualStatus as ManualTrackerStatus]),
+      ) as Record<string, ManualTrackerStatus>;
+      setApprovedByVideoId(nextApprovals);
+      setStatusOverrides(nextManualStatuses);
     }
   }, [data]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const raw = window.localStorage.getItem(STATUS_OVERRIDE_KEY);
+    if (!raw) {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Record<string, string>;
+      const migrated = Object.fromEntries(
+        Object.entries(parsed).map(([videoId, value]) => [
+          videoId,
+          value === "hasnt shot yet" ? "waiting to shoot" : value,
+        ]),
+      ) as Record<string, ManualTrackerStatus>;
+      setStatusOverrides(migrated);
+    } catch {
+      setStatusOverrides({});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(STATUS_OVERRIDE_KEY, JSON.stringify(statusOverrides));
+  }, [statusOverrides]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const raw = window.localStorage.getItem(APPROVALS_KEY);
+    if (!raw) {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Record<string, boolean>;
+      setApprovedByVideoId(parsed);
+    } catch {
+      setApprovedByVideoId({});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(APPROVALS_KEY, JSON.stringify(approvedByVideoId));
+  }, [approvedByVideoId]);
 
   const groupedSchedule = useMemo(() => {
     if (!data) {
@@ -199,6 +389,284 @@ export default function Home() {
       hour: "numeric",
       minute: "2-digit",
     });
+  const getDeliverLabel = (video: VideoItem) => {
+    if (video.goesLive) {
+      return video.goesLive;
+    }
+    const note = video.note ?? "";
+    const match = note.match(/deliver(?:s| by)?\s+([^.,]+)/i);
+    if (!match) {
+      return "TBD";
+    }
+    const normalized = match[1].trim().replace(/^by\s+/i, "");
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  };
+  const parseTime = (value: string): { hour: number; minute: number } | null => {
+    const match = value.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (!match) {
+      return null;
+    }
+    const rawHour = Number(match[1]);
+    const minute = Number(match[2]);
+    const period = match[3].toUpperCase();
+    let hour = rawHour % 12;
+    if (period === "PM") {
+      hour += 12;
+    }
+    return { hour, minute };
+  };
+  const getWeekStartMonday = (date: Date) => {
+    const copy = new Date(date);
+    const shift = (copy.getDay() + 6) % 7;
+    copy.setDate(copy.getDate() - shift);
+    copy.setHours(0, 0, 0, 0);
+    return copy;
+  };
+  const getShootDateTime = (video: VideoItem, now: Date) => {
+    const dayIndex = weekdayToIndex[video.day.toLowerCase()];
+    if (dayIndex === undefined) {
+      return null;
+    }
+    const weekStart = getWeekStartMonday(now);
+    const mondayBasedIndex = (dayIndex + 6) % 7;
+    const shootDate = new Date(weekStart);
+    shootDate.setDate(weekStart.getDate() + mondayBasedIndex);
+
+    const parsedTime = parseTime(video.time);
+    if (parsedTime) {
+      shootDate.setHours(parsedTime.hour, parsedTime.minute, 0, 0);
+    } else {
+      shootDate.setHours(23, 59, 59, 999);
+    }
+    return shootDate;
+  };
+  const isDueToday = (video: VideoItem, now: Date) => {
+    const todayFull = now.toLocaleDateString(undefined, { weekday: "long" }).toLowerCase();
+    const todayShort = now.toLocaleDateString(undefined, { weekday: "short" }).toLowerCase();
+    return video.links.some((link) => {
+      const due = link.commentsDueAt?.trim();
+      if (!due) {
+        return false;
+      }
+      const parsed = new Date(due);
+      if (!Number.isNaN(parsed.getTime())) {
+        return (
+          parsed.getFullYear() === now.getFullYear() &&
+          parsed.getMonth() === now.getMonth() &&
+          parsed.getDate() === now.getDate()
+        );
+      }
+      const normalized = due.toLowerCase();
+      return normalized.includes(todayFull) || normalized.includes(todayShort);
+    });
+  };
+  const getAutoTrackerStatus = (video: VideoItem): TrackerStatus => {
+    const now = new Date();
+    const shootAt = getShootDateTime(video, now);
+
+    if (!shootAt || now < shootAt) {
+      return "waiting to shoot";
+    }
+
+    if (video.links.length > 0 || isDueToday(video, now)) {
+      return "editing";
+    }
+
+    const note = (video.note ?? "").toLowerCase();
+    const mentionsNextDelivery =
+      note.includes("deliver next") || note.includes("delivers next");
+    if (mentionsNextDelivery) {
+      const mondayAfterShoot = getWeekStartMonday(shootAt);
+      mondayAfterShoot.setDate(mondayAfterShoot.getDate() + 7);
+      if (now >= mondayAfterShoot) {
+        return "editing";
+      }
+    }
+
+    return "shot";
+  };
+  const getTrackerStatus = (video: VideoItem): TrackerStatus => {
+    if (statusOverrides[video.id]) {
+      return statusOverrides[video.id];
+    }
+    if (approvedByVideoId[video.id]) {
+      return "approved";
+    }
+    return getAutoTrackerStatus(video);
+  };
+  const getCutdownBadgeClass = (label: string) => {
+    const lower = label.toLowerCase();
+    if (label === "approved") {
+      return "bg-emerald-700/40 border border-emerald-300 text-emerald-100";
+    }
+    if (lower.includes("dark")) {
+      return "bg-zinc-800/50 border border-zinc-500 text-zinc-100";
+    }
+    if (lower.includes("final deliver")) {
+      return "bg-teal-800/45 border border-teal-300 text-teal-100";
+    }
+    if (lower.includes("queued")) {
+      return "bg-slate-700/45 border border-slate-500 text-slate-200";
+    }
+    if (lower.includes("being edited")) {
+      return "bg-amber-700/40 border border-amber-300 text-amber-100";
+    }
+    if (lower.includes("with client")) {
+      return "bg-indigo-800/40 border border-indigo-300 text-indigo-100";
+    }
+    if (lower.includes("with ogilvy")) {
+      return "bg-sky-900/45 border border-sky-400/50 text-sky-100";
+    }
+    return "bg-orange-900/35 border border-orange-500/60 text-orange-100";
+  };
+
+  const getStatusBadgeClass = (statusValue: TrackerStatus) => {
+    if (statusValue === "approved") {
+      return "bg-emerald-700/40 border border-emerald-300 text-emerald-100";
+    }
+    if (statusValue === "waiting on approval") {
+      return "bg-indigo-700/35 border border-indigo-300 text-indigo-100";
+    }
+    if (statusValue === "editing") {
+      return "bg-amber-600/30 border border-amber-400 text-amber-200";
+    }
+    if (statusValue === "shot") {
+      return "bg-blue-700/35 border border-blue-300 text-blue-100";
+    }
+    return "bg-slate-700/40 border border-slate-500 text-slate-200";
+  };
+  const setManualStatus = async (videoId: string, value: string) => {
+    if (value === "approved") {
+      setData((current) => {
+        if (!current) {
+          return current;
+        }
+        return {
+          ...current,
+          videos: current.videos.map((video) =>
+            video.id === videoId
+              ? { ...video, isApproved: true, manualStatus: undefined }
+              : video,
+          ),
+        };
+      });
+      setApprovedByVideoId((current) => ({ ...current, [videoId]: true }));
+      setStatusOverrides((current) => {
+        const next = { ...current };
+        delete next[videoId];
+        return next;
+      });
+      try {
+        await updateVideoWorkflowState({
+          videoId,
+          isApproved: true,
+          manualStatus: null,
+        });
+      } catch {
+        setStatus("Could not save approval to Supabase. Run the SQL migration first.");
+      }
+      return;
+    }
+    if (value === "auto") {
+      setData((current) => {
+        if (!current) {
+          return current;
+        }
+        return {
+          ...current,
+          videos: current.videos.map((video) =>
+            video.id === videoId ? { ...video, manualStatus: undefined } : video,
+          ),
+        };
+      });
+      setStatusOverrides((current) => {
+        const next = { ...current };
+        delete next[videoId];
+        return next;
+      });
+      try {
+        await updateVideoWorkflowState({ videoId, manualStatus: null });
+      } catch {
+        setStatus("Could not save manual status to Supabase. Run the SQL migration first.");
+      }
+      return;
+    }
+    const castValue = value as ManualTrackerStatus;
+    setData((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        videos: current.videos.map((video) =>
+          video.id === videoId
+            ? { ...video, isApproved: false, manualStatus: castValue }
+            : video,
+        ),
+      };
+    });
+    setApprovedByVideoId((current) => ({ ...current, [videoId]: false }));
+    setStatusOverrides((current) => ({ ...current, [videoId]: castValue }));
+    try {
+      await updateVideoWorkflowState({
+        videoId,
+        isApproved: false,
+        manualStatus: castValue,
+      });
+    } catch {
+      setStatus("Could not save manual status to Supabase. Run the SQL migration first.");
+    }
+  };
+  const toggleApproved = async (videoId: string) => {
+    const currentApproved = Boolean(approvedByVideoId[videoId]);
+    const nextApproved = !currentApproved;
+    setData((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        videos: current.videos.map((video) =>
+          video.id === videoId ? { ...video, isApproved: nextApproved } : video,
+        ),
+      };
+    });
+    setApprovedByVideoId((current) => ({ ...current, [videoId]: nextApproved }));
+    try {
+      await updateVideoWorkflowState({ videoId, isApproved: nextApproved });
+    } catch {
+      setStatus("Could not save approval to Supabase. Run the SQL migration first.");
+    }
+  };
+
+  const setCutdownApprovedState = (videoId: string, value: "approved" | "auto") => {
+    if (!cutdownData) {
+      return;
+    }
+    const approved = value === "approved";
+    setCutdownData({
+      ...cutdownData,
+      videos: cutdownData.videos.map((video) =>
+        video.id === videoId
+          ? { ...video, isApproved: approved, manualStatus: undefined }
+          : video,
+      ),
+    });
+  };
+
+  const toggleCutdownApproved = (videoId: string) => {
+    if (!cutdownData) {
+      return;
+    }
+    const current =
+      cutdownData.videos.find((video) => video.id === videoId)?.isApproved ?? false;
+    setCutdownData({
+      ...cutdownData,
+      videos: cutdownData.videos.map((video) =>
+        video.id === videoId ? { ...video, isApproved: !current } : video,
+      ),
+    });
+  };
   const isRecentLink = (postedAt: string) =>
     Date.now() - new Date(postedAt).getTime() <= 1000 * 60 * 60 * 24;
   const getNextLinkVersion = (links: VideoItem["links"]) => {
@@ -208,20 +676,55 @@ export default function Home() {
     const next = numericVersions.length ? Math.max(...numericVersions) + 1 : 1;
     return `Link #${next}`;
   };
+  const getNextBatchLinkVersion = (links: VideoItem["links"]) => {
+    const numericVersions = links
+      .map((link) => Number(link.version.replace(/[^0-9]/g, "")))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const next = numericVersions.length ? Math.max(...numericVersions) + 1 : 1;
+    return `Batch link #${next}`;
+  };
+  const cutdownBatchDraftKey = (batchId: CutdownBatchId) => `batch:${batchId}`;
+  const togglePanel = (panel: Exclude<AppPanel, null>) => {
+    if (activePanel === panel) {
+      setActivePanel(null);
+      return;
+    }
+    setActivePanel(panel);
+  };
 
   const handleAdminAccess = () => {
     if (isAdmin) {
       setIsAdmin(false);
+      setShowAdminPrompt(false);
+      setAdminPasswordInput("");
       setStatus("Admin mode disabled.");
       return;
     }
-    const password = window.prompt("Admin password");
-    if (password === adminPassword) {
-      setIsAdmin(true);
-      setStatus("Admin mode enabled.");
-    } else {
-      setStatus("Wrong admin password.");
+    setAdminPasswordInput("");
+    setShowAdminPrompt(true);
+  };
+
+  const jumpToTeamRoster = () => {
+    if (!isAdmin || hubMode !== "live") {
+      return;
     }
+    setActivePanel("links");
+    const rosterSection = document.getElementById("team-roster-section");
+    rosterSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setTimeout(() => {
+      teamNameInputRef.current?.focus();
+    }, 350);
+  };
+
+  const submitAdminPassword = () => {
+    if (adminPasswordInput.trim() === adminPassword) {
+      setIsAdmin(true);
+      setShowAdminPrompt(false);
+      setAdminPasswordInput("");
+      setStatus("Admin mode enabled.");
+      return;
+    }
+    setStatus("Wrong admin password.");
   };
 
   useEffect(() => {
@@ -233,6 +736,63 @@ export default function Home() {
   }, [selectedBlastVideo, selectedBlastLink]);
 
   const postLink = async (video: VideoItem) => {
+    if (video.id.startsWith("api-cut-")) {
+      if (!cutdownData) {
+        return;
+      }
+      const draft = drafts[video.id];
+      if (!draft?.frameUrl) {
+        setStatus("Frame.io link is required.");
+        return;
+      }
+
+      setBusyVideoId(video.id);
+      setSavedVideoId(null);
+      setStatus("");
+      const autoVersion = getNextLinkVersion(video.links);
+      const postedAt = new Date().toISOString();
+      const newLink = {
+        id: crypto.randomUUID(),
+        version: autoVersion,
+        frameUrl: draft.frameUrl,
+        note: draft.note,
+        customMessage: draft.customMessage,
+        commentsDueAt: draft.commentsDueAt || undefined,
+        postedBy: "Admin",
+        postedAt,
+      };
+
+      const updatedVideos = cutdownData.videos.map((item) => {
+        if (item.id !== video.id) {
+          return item;
+        }
+        return {
+          ...item,
+          links: [newLink, ...item.links],
+        };
+      });
+
+      const nextData = { ...cutdownData, videos: updatedVideos };
+      setCutdownData(nextData);
+      saveCutdownAppData(nextData);
+      setStatus(`Posted ${autoVersion} for ${video.title}.`);
+      setSavedVideoId(video.id);
+      setDrafts((current) => ({
+        ...current,
+        [video.id]: {
+          frameUrl: "",
+          note: "",
+          customMessage: "",
+          commentsDueAt: "",
+        },
+      }));
+      setBusyVideoId("");
+      setTimeout(() => {
+        setSavedVideoId((current) => (current === video.id ? null : current));
+      }, 2000);
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -345,6 +905,44 @@ export default function Home() {
   };
 
   const saveEditedLink = async (video: VideoItem, linkId: string) => {
+    if (video.id.startsWith("api-cut-")) {
+      if (!cutdownData) {
+        return;
+      }
+      if (!editLinkDraft.version.trim() || !editLinkDraft.frameUrl.trim()) {
+        setStatus("Version and Frame.io link are required.");
+        return;
+      }
+
+      const nextVideos = cutdownData.videos.map((item) => {
+        if (item.id !== video.id) {
+          return item;
+        }
+        return {
+          ...item,
+          links: item.links.map((link) =>
+            link.id === linkId
+              ? {
+                  ...link,
+                  version: editLinkDraft.version.trim(),
+                  frameUrl: editLinkDraft.frameUrl.trim(),
+                  note: editLinkDraft.note,
+                  customMessage: editLinkDraft.customMessage,
+                  commentsDueAt: editLinkDraft.commentsDueAt || undefined,
+                }
+              : link,
+          ),
+        };
+      });
+
+      const nextData = { ...cutdownData, videos: nextVideos };
+      setCutdownData(nextData);
+      saveCutdownAppData(nextData);
+      setStatus("Link updated.");
+      cancelEditingLink();
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -392,6 +990,32 @@ export default function Home() {
   };
 
   const deleteLink = async (video: VideoItem, linkId: string) => {
+    if (video.id.startsWith("api-cut-")) {
+      if (!cutdownData) {
+        return;
+      }
+
+      const nextVideos = cutdownData.videos.map((item) => {
+        if (item.id !== video.id) {
+          return item;
+        }
+        return {
+          ...item,
+          links: item.links.filter((link) => link.id !== linkId),
+        };
+      });
+
+      const nextData = { ...cutdownData, videos: nextVideos };
+      setCutdownData(nextData);
+      saveCutdownAppData(nextData);
+
+      if (editingLinkId === linkId) {
+        cancelEditingLink();
+      }
+      setStatus("Link deleted.");
+      return;
+    }
+
     if (!data) {
       return;
     }
@@ -415,6 +1039,138 @@ export default function Home() {
       cancelEditingLink();
     }
     setStatus("Link deleted.");
+  };
+
+  const postCutdownBatchLink = async (batchId: CutdownBatchId) => {
+    if (!cutdownData) {
+      return;
+    }
+    const dkey = cutdownBatchDraftKey(batchId);
+    const draft = drafts[dkey] ?? {
+      frameUrl: "",
+      note: "",
+      customMessage: "",
+      commentsDueAt: "",
+    };
+    if (!draft.frameUrl) {
+      setStatus("Frame.io link is required.");
+      return;
+    }
+
+    setBusyVideoId(dkey);
+    setSavedVideoId(null);
+    setStatus("");
+    const existing = cutdownData.batchLinks[batchId];
+    const autoVersion = getNextBatchLinkVersion(existing);
+    const postedAt = new Date().toISOString();
+    const newLink = {
+      id: crypto.randomUUID(),
+      version: autoVersion,
+      frameUrl: draft.frameUrl,
+      note: draft.note,
+      customMessage: draft.customMessage,
+      commentsDueAt: draft.commentsDueAt || undefined,
+      postedBy: "Admin",
+      postedAt,
+    };
+
+    const nextData: CutdownAppData = {
+      ...cutdownData,
+      batchLinks: {
+        ...cutdownData.batchLinks,
+        [batchId]: [newLink, ...existing],
+      },
+    };
+    setCutdownData(nextData);
+    saveCutdownAppData(nextData);
+    setStatus(`Posted ${autoVersion} for Batch ${batchId}.`);
+    setSavedVideoId(dkey);
+    setDrafts((current) => ({
+      ...current,
+      [dkey]: {
+        frameUrl: "",
+        note: "",
+        customMessage: "",
+        commentsDueAt: "",
+      },
+    }));
+    setBusyVideoId("");
+    setOpenCutdownBatchComposer(null);
+    setTimeout(() => {
+      setSavedVideoId((current) => (current === dkey ? null : current));
+    }, 2000);
+  };
+
+  const saveEditedCutdownLinkById = async (linkId: string) => {
+    if (!cutdownData) {
+      return;
+    }
+    if (!editLinkDraft.version.trim() || !editLinkDraft.frameUrl.trim()) {
+      setStatus("Version and Frame.io link are required.");
+      return;
+    }
+
+    const spot = cutdownData.videos.find((v) => v.links.some((l) => l.id === linkId));
+    if (spot) {
+      await saveEditedLink(spot, linkId);
+      return;
+    }
+
+    for (const bid of CUTDOWN_BATCH_IDS) {
+      if (!cutdownData.batchLinks[bid].some((l) => l.id === linkId)) {
+        continue;
+      }
+      const nextLinks = cutdownData.batchLinks[bid].map((link) =>
+        link.id === linkId
+          ? {
+              ...link,
+              version: editLinkDraft.version.trim(),
+              frameUrl: editLinkDraft.frameUrl.trim(),
+              note: editLinkDraft.note,
+              customMessage: editLinkDraft.customMessage,
+              commentsDueAt: editLinkDraft.commentsDueAt || undefined,
+            }
+          : link,
+      );
+      const nextData: CutdownAppData = {
+        ...cutdownData,
+        batchLinks: { ...cutdownData.batchLinks, [bid]: nextLinks },
+      };
+      setCutdownData(nextData);
+      saveCutdownAppData(nextData);
+      setStatus("Link updated.");
+      cancelEditingLink();
+      return;
+    }
+  };
+
+  const deleteCutdownLinkById = async (linkId: string) => {
+    if (!cutdownData) {
+      return;
+    }
+    const spot = cutdownData.videos.find((v) => v.links.some((l) => l.id === linkId));
+    if (spot) {
+      await deleteLink(spot, linkId);
+      return;
+    }
+
+    for (const bid of CUTDOWN_BATCH_IDS) {
+      if (!cutdownData.batchLinks[bid].some((l) => l.id === linkId)) {
+        continue;
+      }
+      const nextLinks = cutdownData.batchLinks[bid].filter((l) => l.id !== linkId);
+      const nextData: CutdownAppData = {
+        ...cutdownData,
+        batchLinks: { ...cutdownData.batchLinks, [bid]: nextLinks },
+      };
+      setCutdownData(nextData);
+      saveCutdownAppData(nextData);
+      if (editingLinkId === linkId) {
+        cancelEditingLink();
+      }
+      setStatus("Link deleted.");
+      return;
+    }
   };
 
   const addContact = () => {
@@ -653,20 +1409,11 @@ export default function Home() {
         <p className="mt-3 text-center text-sm text-slate-300">
           One place for every video, every link, and every review date.
         </p>
-        {isSupabaseConfigured ? (
-          <p className="mt-2 rounded-lg border border-emerald-700/60 bg-emerald-950/30 p-2 text-xs text-emerald-300">
-            Supabase mode enabled.
-          </p>
-        ) : (
-          <p className="mt-2 rounded-lg border border-amber-700/60 bg-amber-950/30 p-2 text-xs text-amber-300">
-            Local mode enabled. Add Supabase env vars to share data across users.
-          </p>
-        )}
         <button
           onClick={() => setEntered(true)}
           className="mt-8 w-full animate-pulse rounded-2xl border border-cyan-400 bg-cyan-500/10 px-4 py-4 text-base font-semibold text-cyan-200 shadow-lg shadow-cyan-500/20 transition hover:bg-cyan-500/20"
         >
-          Tap to view links
+          Open App
         </button>
         {status ? <p className="mt-4 rounded-lg bg-slate-800 p-2 text-xs">{status}</p> : null}
       </main>
@@ -682,6 +1429,60 @@ export default function Home() {
       >
         {isAdmin ? "admin on" : "•••"}
       </button>
+      {isAdmin && hubMode === "live" ? (
+        <button
+          onClick={jumpToTeamRoster}
+          className="fixed right-16 top-3 z-30 rounded-full border border-amber-500/60 bg-amber-950/60 px-2 py-1 text-[10px] font-semibold text-amber-200 shadow-md shadow-amber-900/40 transition hover:bg-amber-900/60"
+        >
+          Team
+        </button>
+      ) : null}
+      {showAdminPrompt ? (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/70 px-4"
+          onClick={() => {
+            setShowAdminPrompt(false);
+            setAdminPasswordInput("");
+          }}
+        >
+          <div
+            className="w-full max-w-xs rounded-xl border border-slate-700 bg-slate-900 p-3 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="text-sm font-semibold text-slate-200">Admin password</p>
+            <input
+              type="password"
+              value={adminPasswordInput}
+              onChange={(event) => setAdminPasswordInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  submitAdminPassword();
+                }
+              }}
+              autoFocus
+              className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100"
+              placeholder="Enter password"
+            />
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={submitAdminPassword}
+                className="h-10 rounded-md bg-emerald-600 px-3 text-sm font-semibold text-white"
+              >
+                Unlock
+              </button>
+              <button
+                onClick={() => {
+                  setShowAdminPrompt(false);
+                  setAdminPasswordInput("");
+                }}
+                className="h-10 rounded-md bg-slate-700 px-3 text-sm text-slate-100"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="mb-3 flex justify-center">
         <Image
           src="/arnold-palmer-mastercard.png"
@@ -692,16 +1493,232 @@ export default function Home() {
           priority
         />
       </div>
+      <section className="mt-1 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            setHubMode("live");
+            setActivePanel(null);
+          }}
+          className={`rounded-xl border p-3 text-left transition-all duration-200 ${
+            hubMode === "live"
+              ? "border-rose-400 bg-rose-900/45 shadow-lg shadow-rose-900/35"
+              : "border-slate-700 bg-slate-900/60 hover:bg-slate-800"
+          }`}
+        >
+          <p className="text-2xl leading-none">🎬</p>
+          <p className="mt-2 text-xs font-semibold text-rose-100">Live production</p>
+          <p className="mt-0.5 text-[10px] leading-snug text-slate-400">
+            Status tracker · shooting schedule · link review
+          </p>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setHubMode("cutdowns");
+            setActivePanel(null);
+          }}
+          className={`relative rounded-xl border p-3 text-left transition-all duration-200 ${
+            hubMode === "cutdowns"
+              ? "border-orange-400 bg-orange-900/40 shadow-lg shadow-orange-900/30"
+              : "border-slate-700 bg-slate-900/60 hover:bg-slate-800"
+          }`}
+        >
+          <span className="absolute -right-1 -top-1 rounded-full bg-amber-400 px-1.5 py-0.5 text-[8px] font-extrabold uppercase tracking-wider text-slate-950 shadow">
+            New
+          </span>
+          <p className="text-2xl leading-none">✂️</p>
+          <p className="mt-2 text-xs font-semibold text-orange-100">API cutdowns</p>
+          <p className="mt-0.5 text-[10px] leading-snug text-slate-400">
+            :15 / :30 · links + status only
+          </p>
+        </button>
+      </section>
+
+      {status ? <p className="mt-3 rounded-lg bg-slate-800 p-2 text-xs">{status}</p> : null}
+
+      {hubMode === "live" ? (
+        <>
       <header className="sticky top-0 z-10 rounded-xl bg-slate-900/95 p-3 backdrop-blur">
-        <h1 className="text-lg font-semibold">Production Review Hub</h1>
+        <h1 className="text-lg font-semibold">Ogilvy Production Review Link Hub</h1>
         <p className="text-xs text-slate-300">
           Full link history + posting dates for every video
         </p>
       </header>
 
-      {status ? <p className="mt-3 rounded-lg bg-slate-800 p-2 text-xs">{status}</p> : null}
+      <section className="mt-3 grid grid-cols-3 gap-2">
+        <button
+          onClick={() => togglePanel("status")}
+          className={`aspect-square rounded-xl border p-2 text-center transition-all duration-200 ${
+            activePanel === "status"
+              ? "border-violet-400 bg-violet-900/50 shadow-lg shadow-violet-900/40"
+              : "border-violet-700/50 bg-violet-950/20 hover:bg-violet-900/30 hover:-translate-y-0.5"
+          }`}
+        >
+          <div className="flex h-full flex-col items-center justify-center">
+            <p className="text-2xl">📊</p>
+            <p className="mt-2 text-xs font-semibold text-violet-200">Status Tracker</p>
+          </div>
+        </button>
+        <button
+          onClick={() => togglePanel("schedule")}
+          className={`aspect-square rounded-xl border p-2 text-center transition-all duration-200 ${
+            activePanel === "schedule"
+              ? "border-cyan-400 bg-cyan-900/50 shadow-lg shadow-cyan-900/40"
+              : "border-cyan-700/50 bg-cyan-950/20 hover:bg-cyan-900/30 hover:-translate-y-0.5"
+          }`}
+        >
+          <div className="flex h-full flex-col items-center justify-center">
+            <p className="text-2xl">🎬</p>
+            <p className="mt-2 text-xs font-semibold text-cyan-200">Shooting Schedule</p>
+          </div>
+        </button>
+        <button
+          onClick={() => togglePanel("links")}
+          className={`aspect-square rounded-xl border p-2 text-center transition-all duration-200 ${
+            activePanel === "links"
+              ? "border-emerald-400 bg-emerald-900/50 shadow-lg shadow-emerald-900/40"
+              : "border-emerald-700/50 bg-emerald-950/20 hover:bg-emerald-900/30 hover:-translate-y-0.5"
+          }`}
+        >
+          <div className="flex h-full flex-col items-center justify-center">
+            <p className="text-2xl">🔗</p>
+            <p className="mt-2 text-xs font-semibold text-emerald-200">Link Review</p>
+          </div>
+        </button>
+      </section>
 
-      <section className="mt-4 space-y-4">
+      <section
+        className={`overflow-hidden transition-all duration-300 ease-out ${
+          activePanel === "status" ? "mt-3 max-h-[5200px] opacity-100" : "max-h-0 opacity-0"
+        }`}
+      >
+        <div className="rounded-xl border border-violet-700/40 bg-slate-900 p-3">
+            <h2 className="text-lg font-semibold text-violet-200">Film Status Tracker</h2>
+            <div className="mt-3 space-y-3">
+              {groupedSchedule.days.map((day) => (
+                <article
+                  key={`status-${day}`}
+                  className="rounded-lg border border-slate-700 bg-slate-950 p-3"
+                >
+                  <h3 className="text-base font-semibold">{day}</h3>
+                  <div className="mt-2 space-y-2">
+                    {(groupedSchedule.groups[day] ?? []).map((video) => {
+                      const statusValue = getTrackerStatus(video);
+                      const hasManualOverride = Boolean(statusOverrides[video.id]);
+                      return (
+                        <div
+                          key={`status-row-${video.id}`}
+                          className="rounded-md border border-slate-800 bg-slate-900 p-2"
+                        >
+                          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+                            <div className="min-w-0">
+                              <p className="pr-1 text-sm font-medium leading-tight">
+                                {video.emoji} {video.title}
+                              </p>
+                              <p className="text-xs text-slate-400">
+                                Shoots {video.day} {video.time}
+                              </p>
+                            </div>
+                            <span
+                              className={`shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-[10px] font-semibold leading-none ${getStatusBadgeClass(
+                                statusValue,
+                              )}`}
+                            >
+                              {statusValue}
+                            </span>
+                          </div>
+                          {isAdmin ? (
+                            <div className="mt-2 flex items-center gap-2">
+                              <label htmlFor={`status-select-${video.id}`} className="text-[11px] text-slate-400">
+                                Admin override
+                              </label>
+                              <select
+                                id={`status-select-${video.id}`}
+                                value={
+                                  statusOverrides[video.id] ??
+                                  (approvedByVideoId[video.id] ? "approved" : "auto")
+                                }
+                                onChange={(event) => setManualStatus(video.id, event.target.value)}
+                                className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                              >
+                                <option value="auto">auto</option>
+                                <option value="approved">approved</option>
+                                <option value="waiting to shoot">waiting to shoot</option>
+                                <option value="shot">shot</option>
+                                <option value="editing">editing</option>
+                                <option value="waiting on approval">waiting on approval</option>
+                              </select>
+                              {hasManualOverride ? (
+                                <span className="text-[11px] text-violet-300">manual</span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </article>
+              ))}
+            </div>
+        </div>
+      </section>
+
+      <section
+        className={`overflow-hidden transition-all duration-300 ease-out ${
+          activePanel === "schedule" ? "mt-3 max-h-[5200px] opacity-100" : "max-h-0 opacity-0"
+        }`}
+      >
+        <div className="rounded-xl border border-cyan-700/40 bg-slate-900 p-3">
+            <h2 className="text-xl font-semibold text-cyan-200">What We Are Shooting</h2>
+            <div className="mt-3 space-y-3">
+              {groupedSchedule.days.map((day) => (
+                <article key={`schedule-${day}`} className="rounded-lg border border-slate-700 bg-slate-950 p-3">
+                  <h3 className="text-base font-semibold text-cyan-100">{day}</h3>
+                  <div className="mt-2 space-y-2">
+                    {(groupedSchedule.groups[day] ?? []).map((video) => {
+                      const ownerName = getOwnerName(video);
+                      return (
+                        <div
+                          key={`schedule-line-${video.id}`}
+                          className="rounded-md border border-slate-800 bg-slate-900 p-2"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="min-w-0 text-sm font-medium leading-tight">
+                              {video.emoji} {video.title}
+                            </p>
+                            {ownerName ? (
+                              <span className="shrink-0 rounded-full border border-sky-600 bg-sky-900/60 px-2 py-0.5 text-[10px] font-semibold text-sky-200">
+                                {ownerName}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            <div className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1">
+                              <p className="text-[10px] uppercase tracking-wide text-slate-400">Shoot</p>
+                              <p className="text-xs font-medium text-slate-200">{video.day} {video.time}</p>
+                            </div>
+                            <div className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1">
+                              <p className="text-[10px] uppercase tracking-wide text-slate-400">Deliver</p>
+                              <p className="text-xs font-medium text-cyan-200">{getDeliverLabel(video)}</p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </article>
+              ))}
+            </div>
+        </div>
+      </section>
+
+      <section
+        className={`overflow-hidden transition-all duration-300 ease-out ${
+          activePanel === "links" ? "mt-4 max-h-[12000px] opacity-100" : "max-h-0 opacity-0"
+        }`}
+      >
+      <div className="space-y-4">
         {groupedSchedule.days.map((day) => (
           <article key={day} className="rounded-xl border border-slate-800 bg-slate-900 p-3">
             <h2 className="text-base font-semibold">{day}</h2>
@@ -713,6 +1730,8 @@ export default function Home() {
                   customMessage: "",
                   commentsDueAt: "",
                 };
+                const ownerName = getOwnerName(video);
+                const isApproved = Boolean(approvedByVideoId[video.id]);
 
                 return (
                   <div key={video.id} className="rounded-lg border border-slate-800 bg-slate-950 p-3">
@@ -724,25 +1743,51 @@ export default function Home() {
                         <p className="text-xs text-slate-400">
                           Goes live: {video.goesLive || "TBD"}
                         </p>
+                        {isApproved ? (
+                          <p className="mt-1 inline-block rounded-full border border-emerald-400 bg-emerald-900/40 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-emerald-200">
+                            APPROVED
+                          </p>
+                        ) : null}
                       </div>
-                      {isAdmin ? (
-                        <button
-                          onClick={() =>
-                            setOpenComposerVideoId((current) =>
-                              current === video.id ? null : video.id,
-                            )
-                          }
-                          className="rounded-full bg-emerald-600 px-2 py-1 text-xs font-bold text-white"
-                          title="Add link"
-                        >
-                          +
-                        </button>
-                      ) : null}
+                      <div className="flex items-center gap-2">
+                        {ownerName ? (
+                          <span className="rounded-full border border-sky-600 bg-sky-900/60 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-sky-200">
+                            {ownerName}
+                          </span>
+                        ) : null}
+                        {isAdmin ? (
+                          <button
+                            onClick={() => toggleApproved(video.id)}
+                            className={`rounded-full px-2 py-1 text-[10px] font-bold text-white ${
+                              isApproved ? "bg-emerald-700" : "bg-slate-700"
+                            }`}
+                            title="Toggle approved"
+                          >
+                            {isApproved ? "Approved" : "Mark approved"}
+                          </button>
+                        ) : null}
+                        {isAdmin ? (
+                          <button
+                            onClick={() =>
+                              setOpenComposerVideoId((current) =>
+                                current === video.id ? null : video.id,
+                              )
+                            }
+                            className="rounded-full bg-emerald-600 px-2 py-1 text-xs font-bold text-white"
+                            title="Add link"
+                          >
+                            +
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
 
                     {video.links.length > 0 ? (
                       <div className="mt-3 space-y-2">
-                        {video.links.map((link, index) => (
+                        {(expandedHistoryByVideo[video.id]
+                          ? video.links
+                          : [video.links[0]]
+                        ).map((link, index) => (
                           <div key={link.id} className="rounded-md bg-slate-900 p-2">
                             {editingLinkId === link.id ? (
                               <div className="space-y-2">
@@ -858,6 +1903,22 @@ export default function Home() {
                             )}
                           </div>
                         ))}
+                        {video.links.length > 1 ? (
+                          <button
+                            onClick={() =>
+                              setExpandedHistoryByVideo((current) => ({
+                                ...current,
+                                [video.id]: !current[video.id],
+                              }))
+                            }
+                            className="w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-left text-sm text-slate-200"
+                          >
+                            🎬{" "}
+                            {expandedHistoryByVideo[video.id]
+                              ? "Hide film history"
+                              : `Film history (${video.links.length - 1})`}
+                          </button>
+                        ) : null}
                       </div>
                     ) : (
                       <p className="mt-3 text-xs text-slate-500">No links posted yet.</p>
@@ -929,19 +1990,61 @@ export default function Home() {
             </div>
           </article>
         ))}
+      </div>
       </section>
+        </>
+      ) : cutdownData ? (
+        <ApiCutdownsView
+          cutdownVideos={cutdownData.videos}
+          batchLinks={cutdownData.batchLinks}
+          cutdownBatchDraftKey={cutdownBatchDraftKey}
+          openCutdownBatchComposer={openCutdownBatchComposer}
+          setOpenCutdownBatchComposer={setOpenCutdownBatchComposer}
+          postCutdownBatchLink={postCutdownBatchLink}
+          saveEditedCutdownLinkById={saveEditedCutdownLinkById}
+          deleteCutdownLinkById={deleteCutdownLinkById}
+          isAdmin={isAdmin}
+          activePanel={activePanel}
+          onTogglePanel={(panel) => togglePanel(panel)}
+          getCutdownBadgeClass={getCutdownBadgeClass}
+          setCutdownApprovedState={setCutdownApprovedState}
+          toggleCutdownApproved={toggleCutdownApproved}
+          drafts={drafts}
+          setDrafts={setDrafts}
+          expandedHistoryByVideo={expandedHistoryByVideo}
+          setExpandedHistoryByVideo={setExpandedHistoryByVideo}
+          editingLinkId={editingLinkId}
+          editLinkDraft={editLinkDraft}
+          setEditLinkDraft={setEditLinkDraft}
+          openComposerVideoId={openComposerVideoId}
+          setOpenComposerVideoId={setOpenComposerVideoId}
+          busyVideoId={busyVideoId}
+          savedVideoId={savedVideoId}
+          startEditingLink={startEditingLink}
+          cancelEditingLink={cancelEditingLink}
+          saveEditedLink={saveEditedLink}
+          deleteLink={deleteLink}
+          postLink={postLink}
+          formatDue={formatDue}
+          formatPosted={formatPosted}
+          isRecentLink={isRecentLink}
+        />
+      ) : (
+        <p className="mt-3 text-sm text-slate-400">Loading API cutdown workspace…</p>
+      )}
 
-      {isAdmin ? (
+      {hubMode === "live" && isAdmin ? (
         <section className="mt-4 space-y-4 rounded-xl border border-amber-500/40 bg-slate-900 p-3">
           <h2 className="text-base font-semibold text-amber-300">Admin Distribution Console</h2>
 
-          <div className="rounded-md bg-slate-950 p-2">
+          <div id="team-roster-section" className="rounded-md bg-slate-950 p-2">
             <p className="text-xs font-semibold">Distribution List</p>
             <p className="mt-1 text-[11px] text-slate-400">
               Add everyone who should receive review emails.
             </p>
             <div className="mt-2 grid grid-cols-3 gap-2">
               <input
+                ref={teamNameInputRef}
                 value={newContact.name}
                 onChange={(event) => setNewContact({ ...newContact, name: event.target.value })}
                 placeholder="Name"

@@ -36,8 +36,24 @@ create table if not exists videos (
   schedule_type schedule_type not null,
   note text,
   goes_live text,
+  is_approved boolean not null default false,
+  manual_status text,
   created_at timestamptz not null default now()
 );
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'videos_manual_status_check'
+  ) then
+    alter table videos
+      add constraint videos_manual_status_check
+      check (
+        manual_status is null
+        or manual_status in ('waiting to shoot', 'shot', 'editing', 'waiting on approval')
+      );
+  end if;
+end $$;
 
 create table if not exists schedule_items (
   id uuid primary key default gen_random_uuid(),
