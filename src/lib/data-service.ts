@@ -14,8 +14,33 @@ import {
   API_CUTDOWN_DEFS,
   mergeStoredCutdownData,
 } from "@/lib/api-cutdowns";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { loadAppData, saveAppData } from "@/lib/storage";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+
+/** Browser sends this; server checks CUTDOWN_SYNC_SECRET or NEXT_PUBLIC_*. Bypasses RLS (no Supabase Auth in app). */
+const reviewLinksSyncSecret = () => process.env.NEXT_PUBLIC_CUTDOWN_SYNC_SECRET?.trim() ?? "";
+
+const isReviewLinksSyncApiEnabled = (): boolean => Boolean(reviewLinksSyncSecret());
+
+async function postReviewLinksSync(body: object): Promise<void> {
+  const secret = reviewLinksSyncSecret();
+  if (!secret) {
+    throw new Error("Set NEXT_PUBLIC_CUTDOWN_SYNC_SECRET (same value as CUTDOWN_SYNC_SECRET on the server).");
+  }
+  const res = await fetch("/api/review-links-sync", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-cutdown-sync-secret": secret,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const j = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(j.error || `Server error (${res.status})`);
+  }
+}
 
 interface DbVideo {
   id: string;
@@ -219,19 +244,18 @@ const sortLinksPostedDesc = <T extends { postedAt: string }>(links: T[]): T[] =>
     (a, b) => new Date(b.postedAt).getTime() - new Date(a.postedAt).getTime(),
   );
 
-/** Hydrate API cutdown UI from `review_links` + `videos` (same pipeline as Live Production). */
-export const fetchCutdownAppDataFromSupabase = async (): Promise<CutdownAppData | null> => {
-  if (!isSupabaseConfigured || !supabase) {
-    return null;
-  }
+/** Hydrate API cutdown from `review_links` + `videos` using any Supabase client (anon or service role). */
+export async function queryCutdownAppDataWithSupabaseClient(
+  client: SupabaseClient,
+): Promise<CutdownAppData | null> {
   const cutVideoIds = [...API_CUTDOWN_DEFS.map((d) => d.id), API_CUTDOWN_BATCH_VIDEO_ID];
   const [linksRes, videosRes] = await Promise.all([
-    supabase
+    client
       .from("review_links")
       .select("*")
       .in("video_id", cutVideoIds)
       .order("posted_at", { ascending: false }),
-    supabase.from("videos").select("id, is_approved, manual_status").in("id", cutVideoIds),
+    client.from("videos").select("id, is_approved, manual_status").in("id", cutVideoIds),
   ]);
   if (linksRes.error || videosRes.error) {
     return null;
@@ -287,6 +311,29 @@ export const fetchCutdownAppDataFromSupabase = async (): Promise<CutdownAppData 
   const batchFrameLinks = sortLinksPostedDesc(linkMap.get(API_CUTDOWN_BATCH_VIDEO_ID) ?? []);
 
   return mergeStoredCutdownData({ videos: mergedVideos, batchFrameLinks });
+}
+
+/** Hydrate API cutdown UI from Supabase (uses service-role API when sync secret is set — required without Supabase Auth). */
+export const fetchCutdownAppDataFromSupabase = async (): Promise<CutdownAppData | null> => {
+  if (isReviewLinksSyncApiEnabled()) {
+    try {
+      const res = await fetch("/api/review-links-sync", {
+        headers: { "x-cutdown-sync-secret": reviewLinksSyncSecret() },
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        return null;
+      }
+      const j = (await res.json()) as { cutdown?: CutdownAppData | null };
+      return j.cutdown ?? null;
+    } catch {
+      return null;
+    }
+  }
+  if (!isSupabaseConfigured || !supabase) {
+    return null;
+  }
+  return queryCutdownAppDataWithSupabaseClient(supabase);
 };
 
 export const saveReviewLink = async (params: {
@@ -303,7 +350,7 @@ export const saveReviewLink = async (params: {
   bundleId?: string;
   bundleOrder?: number;
 }) => {
-  if (!isSupabaseConfigured || !supabase) {
+  if (!isSupabaseConfigured) {
     return;
   }
 
@@ -324,6 +371,14 @@ export const saveReviewLink = async (params: {
     row.posted_at = params.postedAt;
   }
 
+  if (isReviewLinksSyncApiEnabled()) {
+    await postReviewLinksSync({ op: "insert", row });
+    return;
+  }
+
+  if (!supabase) {
+    return;
+  }
   const { error } = await supabase.from("review_links").insert(row);
   if (error) {
     throw new Error(
@@ -342,7 +397,7 @@ export const updateReviewLinkRecord = async (params: {
   bundleId?: string | null;
   bundleOrder?: number | null;
 }) => {
-  if (!isSupabaseConfigured || !supabase) {
+  if (!isSupabaseConfigured) {
     return;
   }
   const row: Record<string, unknown> = {
@@ -357,6 +412,15 @@ export const updateReviewLinkRecord = async (params: {
   if (params.bundleOrder !== undefined) {
     row.bundle_order = params.bundleOrder;
   }
+
+  if (isReviewLinksSyncApiEnabled()) {
+    await postReviewLinksSync({ op: "update", linkId: params.linkId, patch: row });
+    return;
+  }
+
+  if (!supabase) {
+    return;
+  }
   const { error } = await supabase.from("review_links").update(row).eq("id", params.linkId);
   if (error) {
     throw new Error(
@@ -366,7 +430,14 @@ export const updateReviewLinkRecord = async (params: {
 };
 
 export const deleteReviewLinkRecord = async (linkId: string) => {
-  if (!isSupabaseConfigured || !supabase) {
+  if (!isSupabaseConfigured) {
+    return;
+  }
+  if (isReviewLinksSyncApiEnabled()) {
+    await postReviewLinksSync({ op: "delete", linkId });
+    return;
+  }
+  if (!supabase) {
     return;
   }
   const { error } = await supabase.from("review_links").delete().eq("id", linkId);
@@ -439,7 +510,19 @@ export const updateVideoWorkflowState = async (params: {
   isApproved?: boolean;
   manualStatus?: ManualTrackerStatus | null;
 }) => {
-  if (!isSupabaseConfigured || !supabase) {
+  if (!isSupabaseConfigured) {
+    return;
+  }
+  if (isReviewLinksSyncApiEnabled()) {
+    await postReviewLinksSync({
+      op: "updateVideo",
+      videoId: params.videoId,
+      isApproved: params.isApproved,
+      manualStatus: params.manualStatus,
+    });
+    return;
+  }
+  if (!supabase) {
     return;
   }
   await supabase
