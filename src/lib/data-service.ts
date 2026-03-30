@@ -223,7 +223,7 @@ export const saveReviewLink = async (params: {
     return;
   }
 
-  await supabase.from("review_links").insert({
+  const { error } = await supabase.from("review_links").insert({
     video_id: params.videoId,
     version_label: params.version,
     frameio_url: params.frameUrl,
@@ -233,6 +233,11 @@ export const saveReviewLink = async (params: {
     bundle_id: params.bundleId ?? null,
     bundle_order: params.bundleOrder ?? null,
   });
+  if (error) {
+    throw new Error(
+      `${error.message} (If you use RLS: sign in to Supabase as a user with profile role editor or admin.)`,
+    );
+  }
 };
 
 export const updateReviewLinkRecord = async (params: {
@@ -260,14 +265,24 @@ export const updateReviewLinkRecord = async (params: {
   if (params.bundleOrder !== undefined) {
     row.bundle_order = params.bundleOrder;
   }
-  await supabase.from("review_links").update(row).eq("id", params.linkId);
+  const { error } = await supabase.from("review_links").update(row).eq("id", params.linkId);
+  if (error) {
+    throw new Error(
+      `${error.message} (If you use RLS: sign in to Supabase as a user with profile role editor or admin.)`,
+    );
+  }
 };
 
 export const deleteReviewLinkRecord = async (linkId: string) => {
   if (!isSupabaseConfigured || !supabase) {
     return;
   }
-  await supabase.from("review_links").delete().eq("id", linkId);
+  const { error } = await supabase.from("review_links").delete().eq("id", linkId);
+  if (error) {
+    throw new Error(
+      `${error.message} (If you use RLS: sign in to Supabase as a user with profile role editor or admin.)`,
+    );
+  }
 };
 
 export const addContactRecord = async (contact: Contact) => {

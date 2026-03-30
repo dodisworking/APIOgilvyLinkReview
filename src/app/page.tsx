@@ -203,27 +203,27 @@ export default function Home() {
   const [cutdownData, setCutdownData] = useState<CutdownAppData | null>(null);
   const [openBatchFrameComposer, setOpenBatchFrameComposer] = useState(false);
   const [cutdownPushBusy, setCutdownPushBusy] = useState(false);
-  const [supabaseToast, setSupabaseToast] = useState<string | null>(null);
-  const supabaseToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [linkSaveToast, setLinkSaveToast] = useState<{
+    message: string;
+    tone: "cloud" | "local";
+  } | null>(null);
+  const linkSaveToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showSupabaseSavedToast = () => {
-    if (!isSupabaseConfigured) {
-      return;
+  const showLinkSaveToast = (message: string, tone: "cloud" | "local") => {
+    setLinkSaveToast({ message, tone });
+    if (linkSaveToastTimerRef.current) {
+      clearTimeout(linkSaveToastTimerRef.current);
     }
-    setSupabaseToast("Saved to Supabase");
-    if (supabaseToastTimerRef.current) {
-      clearTimeout(supabaseToastTimerRef.current);
-    }
-    supabaseToastTimerRef.current = setTimeout(() => {
-      setSupabaseToast(null);
-      supabaseToastTimerRef.current = null;
-    }, 2800);
+    linkSaveToastTimerRef.current = setTimeout(() => {
+      setLinkSaveToast(null);
+      linkSaveToastTimerRef.current = null;
+    }, tone === "local" ? 4500 : 2800);
   };
 
   useEffect(() => {
     return () => {
-      if (supabaseToastTimerRef.current) {
-        clearTimeout(supabaseToastTimerRef.current);
+      if (linkSaveToastTimerRef.current) {
+        clearTimeout(linkSaveToastTimerRef.current);
       }
     };
   }, []);
@@ -927,21 +927,28 @@ export default function Home() {
       saveAppData(nextData);
 
       try {
-        for (let i = 0; i < newLinks.length; i += 1) {
-          const nl = newLinks[i];
-          await saveReviewLink({
-            videoId: video.id,
-            version: nl.version,
-            frameUrl: nl.frameUrl,
-            note: nl.note,
-            customMessage: nl.customMessage,
-            commentsDueAt: nl.commentsDueAt,
-            postedBy: "Admin",
-            bundleId: nl.bundleId,
-            bundleOrder: nl.bundleOrder,
-          });
+        if (isSupabaseConfigured) {
+          for (let i = 0; i < newLinks.length; i += 1) {
+            const nl = newLinks[i];
+            await saveReviewLink({
+              videoId: video.id,
+              version: nl.version,
+              frameUrl: nl.frameUrl,
+              note: nl.note,
+              customMessage: nl.customMessage,
+              commentsDueAt: nl.commentsDueAt,
+              postedBy: "Admin",
+              bundleId: nl.bundleId,
+              bundleOrder: nl.bundleOrder,
+            });
+          }
+          showLinkSaveToast("Saved to Supabase", "cloud");
+        } else {
+          showLinkSaveToast(
+            "Saved in this browser only — add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to .env.local to write the cloud database.",
+            "local",
+          );
         }
-        showSupabaseSavedToast();
         const parentLabel = newLinks[0].version.replace(/\s·\s\d+\/\d+$/, "");
         setStatus(`Posted ${newLinks.length} links for ${video.title}.`);
         setSavedVideoId(video.id);
@@ -1007,17 +1014,24 @@ export default function Home() {
     saveAppData(nextData);
 
     try {
-      await saveReviewLink({
-        videoId: video.id,
-        version: autoVersion,
-        frameUrl: draft.frameUrl.trim(),
-        note: draft.note,
-        customMessage: draft.customMessage,
-        commentsDueAt: draft.commentsDueAt || undefined,
-        postedBy: "Admin",
-      });
+      if (isSupabaseConfigured) {
+        await saveReviewLink({
+          videoId: video.id,
+          version: autoVersion,
+          frameUrl: draft.frameUrl.trim(),
+          note: draft.note,
+          customMessage: draft.customMessage,
+          commentsDueAt: draft.commentsDueAt || undefined,
+          postedBy: "Admin",
+        });
+        showLinkSaveToast("Saved to Supabase", "cloud");
+      } else {
+        showLinkSaveToast(
+          "Saved in this browser only — add Supabase URL + anon key in .env.local for cloud.",
+          "local",
+        );
+      }
 
-      showSupabaseSavedToast();
       setStatus(`Posted ${autoVersion} for ${video.title}.`);
       setSavedVideoId(video.id);
       setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
@@ -1136,25 +1150,40 @@ export default function Home() {
       };
     });
 
+    const prevData = data;
     const nextData = { ...data, videos: nextVideos };
     setData(nextData);
     saveAppData(nextData);
 
     const existingLink = video.links.find((l) => l.id === linkId);
-    await updateReviewLinkRecord({
-      linkId,
-      version: editLinkDraft.version.trim(),
-      frameUrl: editLinkDraft.frameUrl.trim(),
-      note: editLinkDraft.note,
-      customMessage: editLinkDraft.customMessage,
-      commentsDueAt: editLinkDraft.commentsDueAt || undefined,
-      bundleId: existingLink?.bundleId,
-      bundleOrder: existingLink?.bundleOrder,
-    });
+    try {
+      if (isSupabaseConfigured) {
+        await updateReviewLinkRecord({
+          linkId,
+          version: editLinkDraft.version.trim(),
+          frameUrl: editLinkDraft.frameUrl.trim(),
+          note: editLinkDraft.note,
+          customMessage: editLinkDraft.customMessage,
+          commentsDueAt: editLinkDraft.commentsDueAt || undefined,
+          bundleId: existingLink?.bundleId,
+          bundleOrder: existingLink?.bundleOrder,
+        });
+        showLinkSaveToast("Saved to Supabase", "cloud");
+      } else {
+        showLinkSaveToast(
+          "Saved in this browser only — add Supabase env in .env.local for cloud.",
+          "local",
+        );
+      }
 
-    showSupabaseSavedToast();
-    setStatus("Link updated.");
-    cancelEditingLink();
+      setStatus("Link updated.");
+      cancelEditingLink();
+    } catch (error) {
+      setData(prevData);
+      saveAppData(prevData);
+      const message = error instanceof Error ? error.message : "Unable to update link.";
+      setStatus(`Link update failed: ${message}`);
+    }
   };
 
   const deleteLink = async (video: VideoItem, linkId: string) => {
@@ -1199,10 +1228,21 @@ export default function Home() {
       };
     });
 
+    const prevDataLive = data;
     const nextDataLive = { ...data, videos: nextVideosLive };
     setData(nextDataLive);
     saveAppData(nextDataLive);
-    await deleteReviewLinkRecord(linkId);
+    try {
+      if (isSupabaseConfigured) {
+        await deleteReviewLinkRecord(linkId);
+      }
+    } catch (error) {
+      setData(prevDataLive);
+      saveAppData(prevDataLive);
+      const message = error instanceof Error ? error.message : "Unable to delete link.";
+      setStatus(`Link delete failed: ${message}`);
+      return;
+    }
 
     if (editingLinkId === linkId) {
       cancelEditingLink();
@@ -1636,12 +1676,16 @@ export default function Home() {
 
   return (
     <main className="mx-auto min-h-screen max-w-md bg-slate-950 p-4 text-slate-100">
-      {supabaseToast ? (
+      {linkSaveToast ? (
         <div
-          className="fixed bottom-6 left-1/2 z-[100] max-w-[90vw] -translate-x-1/2 rounded-lg border border-emerald-500/40 bg-emerald-950/95 px-4 py-2.5 text-center text-sm font-medium text-emerald-50 shadow-lg shadow-emerald-950/50"
+          className={`fixed bottom-6 left-1/2 z-[100] max-w-[92vw] -translate-x-1/2 rounded-lg px-4 py-2.5 text-center text-xs font-medium shadow-lg sm:text-sm ${
+            linkSaveToast.tone === "cloud"
+              ? "border border-emerald-500/40 bg-emerald-950/95 text-emerald-50 shadow-emerald-950/50"
+              : "border border-amber-500/50 bg-amber-950/95 text-amber-50 shadow-amber-950/50"
+          }`}
           role="status"
         >
-          {supabaseToast}
+          {linkSaveToast.message}
         </div>
       ) : null}
       <button
