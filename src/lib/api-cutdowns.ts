@@ -3,6 +3,9 @@ import type { CutdownAppData, ReviewLinkVersion, VideoItem } from "@/types";
 /** Draft key for the single shared batch Frame composer (see page.tsx). */
 export const BATCH_FRAME_DRAFT_KEY = "batch:frame";
 
+/** Must exist as `videos.id` in Supabase; batch column links use `review_links.video_id`. */
+export const API_CUTDOWN_BATCH_VIDEO_ID = "api-cut-batch-shared";
+
 /** Local calendar YYYY-MM-DD in the user's timezone. */
 export function localYmd(d: Date): string {
   const y = d.getFullYear();

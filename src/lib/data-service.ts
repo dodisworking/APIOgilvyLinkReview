@@ -2,12 +2,18 @@ import { seededAppData } from "@/data/seed";
 import {
   AppData,
   Contact,
+  CutdownAppData,
   ManualTrackerStatus,
   ReviewLinkVersion,
   Role,
   TeamType,
   VideoItem,
 } from "@/types";
+import {
+  API_CUTDOWN_BATCH_VIDEO_ID,
+  API_CUTDOWN_DEFS,
+  mergeStoredCutdownData,
+} from "@/lib/api-cutdowns";
 import { loadAppData, saveAppData } from "@/lib/storage";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
@@ -208,7 +214,84 @@ export const fetchAppData = async (): Promise<AppData> => {
   return normalized.data;
 };
 
+const sortLinksPostedDesc = <T extends { postedAt: string }>(links: T[]): T[] =>
+  [...links].sort(
+    (a, b) => new Date(b.postedAt).getTime() - new Date(a.postedAt).getTime(),
+  );
+
+/** Hydrate API cutdown UI from `review_links` + `videos` (same pipeline as Live Production). */
+export const fetchCutdownAppDataFromSupabase = async (): Promise<CutdownAppData | null> => {
+  if (!isSupabaseConfigured || !supabase) {
+    return null;
+  }
+  const cutVideoIds = [...API_CUTDOWN_DEFS.map((d) => d.id), API_CUTDOWN_BATCH_VIDEO_ID];
+  const [linksRes, videosRes] = await Promise.all([
+    supabase
+      .from("review_links")
+      .select("*")
+      .in("video_id", cutVideoIds)
+      .order("posted_at", { ascending: false }),
+    supabase.from("videos").select("id, is_approved, manual_status").in("id", cutVideoIds),
+  ]);
+  if (linksRes.error || videosRes.error) {
+    return null;
+  }
+
+  const linkMap = new Map<string, ReviewLinkVersion[]>();
+  (linksRes.data as DbReviewLink[]).forEach((link) => {
+    const { note, commentsDueAt } = splitDueFromNotes(link.notes);
+    const row: ReviewLinkVersion = {
+      id: link.id,
+      version: link.version_label,
+      frameUrl: link.frameio_url,
+      note,
+      customMessage: link.custom_message ?? "",
+      commentsDueAt,
+      postedBy: link.posted_by_name,
+      postedAt: link.posted_at,
+      bundleId: link.bundle_id ?? undefined,
+      bundleOrder: link.bundle_order ?? undefined,
+    };
+    const current = linkMap.get(link.video_id) ?? [];
+    current.push(row);
+    linkMap.set(link.video_id, current);
+  });
+
+  type VidRow = { id: string; is_approved: boolean | null; manual_status: ManualTrackerStatus | null };
+  const vidMeta = new Map(
+    ((videosRes.data as VidRow[]) ?? []).map((v) => [
+      v.id,
+      {
+        isApproved: Boolean(v.is_approved),
+        manualStatus: v.manual_status ?? undefined,
+      },
+    ]),
+  );
+
+  const mergedVideos = API_CUTDOWN_DEFS.map((def) => {
+    const meta = vidMeta.get(def.id);
+    return {
+      id: def.id,
+      title: def.title,
+      emoji: def.emoji,
+      day: "—",
+      time: "—",
+      scheduleType: "record" as const,
+      note: "API cutdown",
+      links: sortLinksPostedDesc(linkMap.get(def.id) ?? []),
+      isApproved: meta?.isApproved ?? false,
+      manualStatus: meta?.manualStatus,
+    };
+  });
+
+  const batchFrameLinks = sortLinksPostedDesc(linkMap.get(API_CUTDOWN_BATCH_VIDEO_ID) ?? []);
+
+  return mergeStoredCutdownData({ videos: mergedVideos, batchFrameLinks });
+};
+
 export const saveReviewLink = async (params: {
+  /** When set, insert uses this UUID so UI ids match the database (API cutdown + optimistic UI). */
+  linkId?: string;
   videoId: string;
   version: string;
   frameUrl: string;
@@ -216,6 +299,7 @@ export const saveReviewLink = async (params: {
   customMessage: string;
   commentsDueAt?: string;
   postedBy: string;
+  postedAt?: string;
   bundleId?: string;
   bundleOrder?: number;
 }) => {
@@ -223,7 +307,7 @@ export const saveReviewLink = async (params: {
     return;
   }
 
-  const { error } = await supabase.from("review_links").insert({
+  const row: Record<string, unknown> = {
     video_id: params.videoId,
     version_label: params.version,
     frameio_url: params.frameUrl,
@@ -232,7 +316,15 @@ export const saveReviewLink = async (params: {
     posted_by_name: params.postedBy,
     bundle_id: params.bundleId ?? null,
     bundle_order: params.bundleOrder ?? null,
-  });
+  };
+  if (params.linkId) {
+    row.id = params.linkId;
+  }
+  if (params.postedAt) {
+    row.posted_at = params.postedAt;
+  }
+
+  const { error } = await supabase.from("review_links").insert(row);
   if (error) {
     throw new Error(
       `${error.message} (If you use RLS: sign in to Supabase as a user with profile role editor or admin.)`,

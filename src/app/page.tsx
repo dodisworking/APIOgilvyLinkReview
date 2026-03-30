@@ -6,6 +6,7 @@ import {
   addContactRecord,
   deleteReviewLinkRecord,
   fetchAppData,
+  fetchCutdownAppDataFromSupabase,
   removeContactRecord,
   saveNotificationLog,
   saveReviewLink,
@@ -15,7 +16,11 @@ import {
 } from "@/lib/data-service";
 import { ApiCutdownsView } from "@/components/ApiCutdownsView";
 import { LinkComposerForm } from "@/components/LinkComposerForm";
-import { BATCH_FRAME_DRAFT_KEY, mergeCutdownRemoteAndLocal } from "@/lib/api-cutdowns";
+import {
+  API_CUTDOWN_BATCH_VIDEO_ID,
+  BATCH_FRAME_DRAFT_KEY,
+  mergeCutdownRemoteAndLocal,
+} from "@/lib/api-cutdowns";
 import {
   emptyComposerDraft,
   getNextBatchPostingVersionLabel,
@@ -274,24 +279,27 @@ export default function Home() {
   const cutdownSyncQuietUntil = useRef(0);
 
   useEffect(() => {
-    const local = loadCutdownAppData();
-    setCutdownData(local);
     let cancelled = false;
     void (async () => {
+      const local = loadCutdownAppData();
+      let merged = local;
       try {
-        const remote = await fetchCutdownRemotePayload();
-        if (cancelled || !remote) {
-          return;
-        }
-        cutdownSyncQuietUntil.current = Date.now() + 2000;
-        setCutdownData((current) => {
-          if (!current) {
-            return remote;
+        if (isSupabaseConfigured) {
+          const fromLinks = await fetchCutdownAppDataFromSupabase();
+          if (!cancelled && fromLinks) {
+            merged = mergeCutdownRemoteAndLocal(merged, fromLinks);
           }
-          return mergeCutdownRemoteAndLocal(current, remote);
-        });
+        }
+        const remote = await fetchCutdownRemotePayload();
+        if (!cancelled && remote) {
+          merged = mergeCutdownRemoteAndLocal(merged, remote);
+        }
       } catch {
-        /* keep local */
+        /* keep merged */
+      }
+      if (!cancelled) {
+        cutdownSyncQuietUntil.current = Date.now() + 2000;
+        setCutdownData(merged);
       }
     })();
     return () => {
@@ -304,6 +312,9 @@ export default function Home() {
       return;
     }
     saveCutdownAppData(cutdownData);
+    if (isSupabaseConfigured) {
+      return;
+    }
     if (Date.now() < cutdownSyncQuietUntil.current) {
       return;
     }
@@ -321,19 +332,32 @@ export default function Home() {
     payload: CutdownAppData,
   ): Promise<CutdownPushResult> => pushCutdownRemote(payload);
 
-  const showCutdownCloudSaveDialog = (r: CutdownPushResult) => {
+  type CutdownSaveFeedback =
+    | CutdownPushResult
+    | { ok: true; via: "review_links" }
+    | { ok: false; detail: string; via: "review_links" | "workspace" };
+
+  const showCutdownSaveFeedback = (r: CutdownSaveFeedback) => {
     if (r.ok) {
+      const via = "via" in r ? r.via : "workspace";
       setCutdownSyncDialog({
         ok: true,
         title: "Saved to Supabase",
-        body: "Your API cutdown link was written to the shared workspace in Supabase (cutdown_workspace). It is also kept in this browser.",
+        body:
+          via === "review_links"
+            ? "Stored in review_links — same table and flow as Live Production (RLS: editor/admin when signed in)."
+            : "Synced to cutdown_workspace (JSON). You can still use this if you rely on the legacy workspace sync.",
       });
       return;
     }
+    const via = "via" in r ? r.via : "workspace";
     setCutdownSyncDialog({
       ok: false,
       title: "Not saved to Supabase",
-      body: `${r.detail}\n\nWhy this happens: the app posts to /api/cutdown-data using NEXT_PUBLIC_CUTDOWN_SYNC_SECRET; the server must accept it and write to Supabase. Your link is still saved locally in this browser until sync works.`,
+      body:
+        via === "review_links"
+          ? `${r.detail}\n\nThis path uses the same rules as live hub links: sign in with a profile role of editor or admin if RLS is enabled.`
+          : `${r.detail}\n\nWorkspace path: set NEXT_PUBLIC_CUTDOWN_SYNC_SECRET and server CUTDOWN_SYNC_SECRET, or use Supabase (review_links) with URL + anon key and sign-in.`,
     });
   };
 
@@ -743,7 +767,27 @@ export default function Home() {
       ),
     };
     setCutdownData(nextData);
-    void pushCutdownShareToServer(nextData);
+    saveCutdownAppData(nextData);
+    void (async () => {
+      if (isSupabaseConfigured) {
+        try {
+          await updateVideoWorkflowState({
+            videoId,
+            isApproved: approved,
+            manualStatus: null,
+          });
+        } catch {
+          setStatus("Could not save cutdown approval to Supabase.");
+        }
+        return;
+      }
+      if (isCutdownRemoteWriteConfigured()) {
+        const r = await pushCutdownShareToServer(nextData);
+        if (!r.ok) {
+          setStatus((prev) => prev || `Cutdown sync: ${r.detail}`);
+        }
+      }
+    })();
   };
 
   const toggleCutdownApproved = (videoId: string) => {
@@ -752,14 +796,31 @@ export default function Home() {
     }
     const current =
       cutdownData.videos.find((video) => video.id === videoId)?.isApproved ?? false;
+    const nextApproved = !current;
     const nextData: CutdownAppData = {
       ...cutdownData,
       videos: cutdownData.videos.map((video) =>
-        video.id === videoId ? { ...video, isApproved: !current } : video,
+        video.id === videoId ? { ...video, isApproved: nextApproved } : video,
       ),
     };
     setCutdownData(nextData);
-    void pushCutdownShareToServer(nextData);
+    saveCutdownAppData(nextData);
+    void (async () => {
+      if (isSupabaseConfigured) {
+        try {
+          await updateVideoWorkflowState({ videoId, isApproved: nextApproved });
+        } catch {
+          setStatus("Could not save cutdown approval to Supabase.");
+        }
+        return;
+      }
+      if (isCutdownRemoteWriteConfigured()) {
+        const r = await pushCutdownShareToServer(nextData);
+        if (!r.ok) {
+          setStatus((prev) => prev || `Cutdown sync: ${r.detail}`);
+        }
+      }
+    })();
   };
   const isRecentLink = (postedAt: string) =>
     Date.now() - new Date(postedAt).getTime() <= 1000 * 60 * 60 * 24;
@@ -864,14 +925,43 @@ export default function Home() {
             : { ...item, links: [...newLinks, ...item.links] },
         );
         const nextData = { ...cutdownData, videos: updatedVideos };
+        const prevData = cutdownData;
         setCutdownData(nextData);
         saveCutdownAppData(nextData);
         try {
-          const r = await pushCutdownShareToServer(nextData);
-          showCutdownCloudSaveDialog(r);
+          if (isSupabaseConfigured) {
+            for (const nl of newLinks) {
+              await saveReviewLink({
+                linkId: nl.id,
+                videoId: video.id,
+                version: nl.version,
+                frameUrl: nl.frameUrl,
+                note: nl.note,
+                customMessage: nl.customMessage,
+                commentsDueAt: nl.commentsDueAt,
+                postedBy: nl.postedBy,
+                postedAt: nl.postedAt,
+                bundleId: nl.bundleId,
+                bundleOrder: nl.bundleOrder,
+              });
+            }
+            showCutdownSaveFeedback({ ok: true, via: "review_links" });
+          } else {
+            const r = await pushCutdownShareToServer(nextData);
+            showCutdownSaveFeedback(r);
+          }
           setStatus(`Posted ${newLinks.length} links for ${video.title}.`);
           setSavedVideoId(video.id);
           setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
+        } catch (error) {
+          setCutdownData(prevData);
+          saveCutdownAppData(prevData);
+          const message = error instanceof Error ? error.message : "Unable to save link.";
+          if (isSupabaseConfigured) {
+            showCutdownSaveFeedback({ ok: false, detail: message, via: "review_links" });
+          } else {
+            showCutdownSaveFeedback({ ok: false, detail: message, via: "workspace" });
+          }
         } finally {
           setBusyVideoId("");
           setTimeout(() => {
@@ -913,14 +1003,39 @@ export default function Home() {
       });
 
       const nextData = { ...cutdownData, videos: updatedVideos };
+      const prevDataSingle = cutdownData;
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
       try {
-        const r = await pushCutdownShareToServer(nextData);
-        showCutdownCloudSaveDialog(r);
+        if (isSupabaseConfigured) {
+          await saveReviewLink({
+            linkId: newLink.id,
+            videoId: video.id,
+            version: newLink.version,
+            frameUrl: newLink.frameUrl,
+            note: newLink.note,
+            customMessage: newLink.customMessage,
+            commentsDueAt: newLink.commentsDueAt,
+            postedBy: newLink.postedBy,
+            postedAt: newLink.postedAt,
+          });
+          showCutdownSaveFeedback({ ok: true, via: "review_links" });
+        } else {
+          const r = await pushCutdownShareToServer(nextData);
+          showCutdownSaveFeedback(r);
+        }
         setStatus(`Posted ${autoVersion} for ${video.title}.`);
         setSavedVideoId(video.id);
         setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
+      } catch (error) {
+        setCutdownData(prevDataSingle);
+        saveCutdownAppData(prevDataSingle);
+        const message = error instanceof Error ? error.message : "Unable to save link.";
+        showCutdownSaveFeedback({
+          ok: false,
+          detail: message,
+          via: isSupabaseConfigured ? "review_links" : "workspace",
+        });
       } finally {
         setBusyVideoId("");
         setTimeout(() => {
@@ -1139,12 +1254,37 @@ export default function Home() {
         };
       });
 
+      const prevCut = cutdownData;
       const nextData = { ...cutdownData, videos: nextVideos };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
-      void pushCutdownShareToServer(nextData);
-      setStatus("Link updated.");
-      cancelEditingLink();
+      const existingLink = video.links.find((l) => l.id === linkId);
+      try {
+        if (isSupabaseConfigured) {
+          await updateReviewLinkRecord({
+            linkId,
+            version: editLinkDraft.version.trim(),
+            frameUrl: editLinkDraft.frameUrl.trim(),
+            note: editLinkDraft.note,
+            customMessage: editLinkDraft.customMessage,
+            commentsDueAt: editLinkDraft.commentsDueAt || undefined,
+            bundleId: existingLink?.bundleId,
+            bundleOrder: existingLink?.bundleOrder,
+          });
+        } else if (isCutdownRemoteWriteConfigured()) {
+          const r = await pushCutdownShareToServer(nextData);
+          if (!r.ok) {
+            setStatus(`Cutdown sync: ${r.detail}`);
+          }
+        }
+        setStatus("Link updated.");
+        cancelEditingLink();
+      } catch (error) {
+        setCutdownData(prevCut);
+        saveCutdownAppData(prevCut);
+        const message = error instanceof Error ? error.message : "Unable to update link.";
+        setStatus(`Link update failed: ${message}`);
+      }
       return;
     }
 
@@ -1229,15 +1369,29 @@ export default function Home() {
         };
       });
 
+      const prevCutDel = cutdownData;
       const nextData = { ...cutdownData, videos: nextVideos };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
-      void pushCutdownShareToServer(nextData);
-
-      if (editingLinkId === linkId) {
-        cancelEditingLink();
+      try {
+        if (isSupabaseConfigured) {
+          await deleteReviewLinkRecord(linkId);
+        } else if (isCutdownRemoteWriteConfigured()) {
+          const r = await pushCutdownShareToServer(nextData);
+          if (!r.ok) {
+            setStatus(`Cutdown sync: ${r.detail}`);
+          }
+        }
+        if (editingLinkId === linkId) {
+          cancelEditingLink();
+        }
+        setStatus("Link deleted.");
+      } catch (error) {
+        setCutdownData(prevCutDel);
+        saveCutdownAppData(prevCutDel);
+        const message = error instanceof Error ? error.message : "Unable to delete link.";
+        setStatus(`Link delete failed: ${message}`);
       }
-      setStatus("Link deleted.");
       return;
     }
 
@@ -1319,15 +1473,44 @@ export default function Home() {
         ...cutdownData,
         batchFrameLinks: [...newLinks, ...existing],
       };
+      const prevBatch = cutdownData;
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
       try {
-        const r = await pushCutdownShareToServer(nextData);
-        showCutdownCloudSaveDialog(r);
+        if (isSupabaseConfigured) {
+          for (const nl of newLinks) {
+            await saveReviewLink({
+              linkId: nl.id,
+              videoId: API_CUTDOWN_BATCH_VIDEO_ID,
+              version: nl.version,
+              frameUrl: nl.frameUrl,
+              note: nl.note,
+              customMessage: nl.customMessage,
+              commentsDueAt: nl.commentsDueAt,
+              postedBy: nl.postedBy,
+              postedAt: nl.postedAt,
+              bundleId: nl.bundleId,
+              bundleOrder: nl.bundleOrder,
+            });
+          }
+          showCutdownSaveFeedback({ ok: true, via: "review_links" });
+        } else {
+          const r = await pushCutdownShareToServer(nextData);
+          showCutdownSaveFeedback(r);
+        }
         setStatus(`Posted ${newLinks.length} shared batch link(s) (today's column).`);
         setSavedVideoId(dkey);
         setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
         setOpenBatchFrameComposer(false);
+      } catch (error) {
+        setCutdownData(prevBatch);
+        saveCutdownAppData(prevBatch);
+        const message = error instanceof Error ? error.message : "Unable to save link.";
+        showCutdownSaveFeedback({
+          ok: false,
+          detail: message,
+          via: isSupabaseConfigured ? "review_links" : "workspace",
+        });
       } finally {
         setBusyVideoId("");
         setTimeout(() => {
@@ -1362,15 +1545,40 @@ export default function Home() {
       ...cutdownData,
       batchFrameLinks: [newLink, ...existing],
     };
+    const prevBatchSingle = cutdownData;
     setCutdownData(nextData);
     saveCutdownAppData(nextData);
     try {
-      const r = await pushCutdownShareToServer(nextData);
-      showCutdownCloudSaveDialog(r);
+      if (isSupabaseConfigured) {
+        await saveReviewLink({
+          linkId: newLink.id,
+          videoId: API_CUTDOWN_BATCH_VIDEO_ID,
+          version: newLink.version,
+          frameUrl: newLink.frameUrl,
+          note: newLink.note,
+          customMessage: newLink.customMessage,
+          commentsDueAt: newLink.commentsDueAt,
+          postedBy: newLink.postedBy,
+          postedAt: newLink.postedAt,
+        });
+        showCutdownSaveFeedback({ ok: true, via: "review_links" });
+      } else {
+        const r = await pushCutdownShareToServer(nextData);
+        showCutdownSaveFeedback(r);
+      }
       setStatus(`Posted ${autoVersion} (today's column).`);
       setSavedVideoId(dkey);
       setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
       setOpenBatchFrameComposer(false);
+    } catch (error) {
+      setCutdownData(prevBatchSingle);
+      saveCutdownAppData(prevBatchSingle);
+      const message = error instanceof Error ? error.message : "Unable to save link.";
+      showCutdownSaveFeedback({
+        ok: false,
+        detail: message,
+        via: isSupabaseConfigured ? "review_links" : "workspace",
+      });
     } finally {
       setBusyVideoId("");
       setTimeout(() => {
@@ -1395,6 +1603,7 @@ export default function Home() {
     }
 
     if (cutdownData.batchFrameLinks.some((l) => l.id === linkId)) {
+      const existingBatchLink = cutdownData.batchFrameLinks.find((l) => l.id === linkId);
       const nextLinks = cutdownData.batchFrameLinks.map((link) =>
         link.id === linkId
           ? {
@@ -1407,15 +1616,39 @@ export default function Home() {
             }
           : link,
       );
+      const prevBatchEdit = cutdownData;
       const nextData: CutdownAppData = {
         ...cutdownData,
         batchFrameLinks: nextLinks,
       };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
-      void pushCutdownShareToServer(nextData);
-      setStatus("Link updated.");
-      cancelEditingLink();
+      try {
+        if (isSupabaseConfigured) {
+          await updateReviewLinkRecord({
+            linkId,
+            version: editLinkDraft.version.trim(),
+            frameUrl: editLinkDraft.frameUrl.trim(),
+            note: editLinkDraft.note,
+            customMessage: editLinkDraft.customMessage,
+            commentsDueAt: editLinkDraft.commentsDueAt || undefined,
+            bundleId: existingBatchLink?.bundleId,
+            bundleOrder: existingBatchLink?.bundleOrder,
+          });
+        } else if (isCutdownRemoteWriteConfigured()) {
+          const r = await pushCutdownShareToServer(nextData);
+          if (!r.ok) {
+            setStatus(`Cutdown sync: ${r.detail}`);
+          }
+        }
+        setStatus("Link updated.");
+        cancelEditingLink();
+      } catch (error) {
+        setCutdownData(prevBatchEdit);
+        saveCutdownAppData(prevBatchEdit);
+        const message = error instanceof Error ? error.message : "Unable to update link.";
+        setStatus(`Link update failed: ${message}`);
+      }
       return;
     }
   };
@@ -1432,17 +1665,32 @@ export default function Home() {
 
     if (cutdownData.batchFrameLinks.some((l) => l.id === linkId)) {
       const nextLinks = cutdownData.batchFrameLinks.filter((l) => l.id !== linkId);
+      const prevBatchDel = cutdownData;
       const nextData: CutdownAppData = {
         ...cutdownData,
         batchFrameLinks: nextLinks,
       };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
-      void pushCutdownShareToServer(nextData);
-      if (editingLinkId === linkId) {
-        cancelEditingLink();
+      try {
+        if (isSupabaseConfigured) {
+          await deleteReviewLinkRecord(linkId);
+        } else if (isCutdownRemoteWriteConfigured()) {
+          const r = await pushCutdownShareToServer(nextData);
+          if (!r.ok) {
+            setStatus(`Cutdown sync: ${r.detail}`);
+          }
+        }
+        if (editingLinkId === linkId) {
+          cancelEditingLink();
+        }
+        setStatus("Link deleted.");
+      } catch (error) {
+        setCutdownData(prevBatchDel);
+        saveCutdownAppData(prevBatchDel);
+        const message = error instanceof Error ? error.message : "Unable to delete link.";
+        setStatus(`Link delete failed: ${message}`);
       }
-      setStatus("Link deleted.");
       return;
     }
   };

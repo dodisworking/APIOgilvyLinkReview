@@ -193,3 +193,8 @@ for insert with check (get_my_role() in ('editor', 'admin'));
 
 create policy "logs_select_editor_admin" on notification_logs
 for select using (get_my_role() in ('editor', 'admin'));
+
+-- API cutdown → review_links: each spot id (api-cut-*) plus api-cut-batch-shared must exist in videos (FK).
+-- Example: insert into videos (id, title, emoji, day, time, schedule_type) values
+--   ('api-cut-batch-shared', 'API Cutdown — Shared batch', '📎', '—', '—', 'record')
+--   on conflict (id) do nothing;
