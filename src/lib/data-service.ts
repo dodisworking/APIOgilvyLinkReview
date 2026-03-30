@@ -359,9 +359,12 @@ export const saveReviewLink = async (params: {
     notes: combineDueAndNotes(params.note, params.commentsDueAt),
     custom_message: params.customMessage,
     posted_by_name: params.postedBy,
-    bundle_id: params.bundleId ?? null,
-    bundle_order: params.bundleOrder ?? null,
   };
+  // Omit when unset so databases without bundle columns (pre-migration) still accept inserts.
+  if (params.bundleId !== undefined || params.bundleOrder !== undefined) {
+    row.bundle_id = params.bundleId ?? null;
+    row.bundle_order = params.bundleOrder ?? null;
+  }
   if (params.linkId) {
     row.id = params.linkId;
   }

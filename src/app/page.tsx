@@ -148,7 +148,8 @@ type AppPanel = "status" | "schedule" | "links" | null;
 const STATUS_OVERRIDE_KEY = "production-review-status-overrides-v1";
 const APPROVALS_KEY = "production-review-approvals-v1";
 type HubMode = "live" | "cutdowns";
-const HUB_MODE_KEY = "production-review-hub-mode-v1";
+/** v2: default hub is API cutdowns; v1 often stored "live" from the old default. */
+const HUB_MODE_KEY = "production-review-hub-mode-v2";
 
 const weekdayToIndex: Record<string, number> = {
   sunday: 0,
@@ -205,7 +206,16 @@ export default function Home() {
   const [savedVideoId, setSavedVideoId] = useState<string | null>(null);
   const [openComposerVideoId, setOpenComposerVideoId] = useState<string | null>(null);
   const [activePanel, setActivePanel] = useState<AppPanel>(null);
-  const [hubMode, setHubMode] = useState<HubMode>("live");
+  const [hubMode, setHubMode] = useState<HubMode>(() => {
+    if (typeof window === "undefined") {
+      return "cutdowns";
+    }
+    const raw = window.localStorage.getItem(HUB_MODE_KEY);
+    if (raw === "live" || raw === "cutdowns") {
+      return raw;
+    }
+    return "cutdowns";
+  });
   const [cutdownData, setCutdownData] = useState<CutdownAppData | null>(null);
   const [openBatchFrameComposer, setOpenBatchFrameComposer] = useState(false);
   const [cutdownPushBusy, setCutdownPushBusy] = useState(false);
@@ -360,16 +370,6 @@ export default function Home() {
           : `${r.detail}\n\nLegacy workspace: set NEXT_PUBLIC_CUTDOWN_SYNC_SECRET + CUTDOWN_SYNC_SECRET on Vercel, or add NEXT_PUBLIC_SUPABASE_URL + ANON_KEY to use review_links instead.`,
     });
   };
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    const raw = window.localStorage.getItem(HUB_MODE_KEY);
-    if (raw === "live" || raw === "cutdowns") {
-      setHubMode(raw);
-    }
-  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") {
