@@ -30,6 +30,7 @@ import {
   pushCutdownRemote,
 } from "@/lib/cutdown-remote";
 import { loadCutdownAppData, saveCutdownAppData } from "@/lib/cutdown-storage";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import { saveAppData } from "@/lib/storage";
 import {
   AppData,
@@ -202,6 +203,30 @@ export default function Home() {
   const [cutdownData, setCutdownData] = useState<CutdownAppData | null>(null);
   const [openBatchFrameComposer, setOpenBatchFrameComposer] = useState(false);
   const [cutdownPushBusy, setCutdownPushBusy] = useState(false);
+  const [supabaseToast, setSupabaseToast] = useState<string | null>(null);
+  const supabaseToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showSupabaseSavedToast = () => {
+    if (!isSupabaseConfigured) {
+      return;
+    }
+    setSupabaseToast("Saved to Supabase");
+    if (supabaseToastTimerRef.current) {
+      clearTimeout(supabaseToastTimerRef.current);
+    }
+    supabaseToastTimerRef.current = setTimeout(() => {
+      setSupabaseToast(null);
+      supabaseToastTimerRef.current = null;
+    }, 2800);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (supabaseToastTimerRef.current) {
+        clearTimeout(supabaseToastTimerRef.current);
+      }
+    };
+  }, []);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, ManualTrackerStatus>>(
     {},
   );
@@ -916,6 +941,7 @@ export default function Home() {
             bundleOrder: nl.bundleOrder,
           });
         }
+        showSupabaseSavedToast();
         const parentLabel = newLinks[0].version.replace(/\s·\s\d+\/\d+$/, "");
         setStatus(`Posted ${newLinks.length} links for ${video.title}.`);
         setSavedVideoId(video.id);
@@ -991,6 +1017,7 @@ export default function Home() {
         postedBy: "Admin",
       });
 
+      showSupabaseSavedToast();
       setStatus(`Posted ${autoVersion} for ${video.title}.`);
       setSavedVideoId(video.id);
       setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
@@ -1125,6 +1152,7 @@ export default function Home() {
       bundleOrder: existingLink?.bundleOrder,
     });
 
+    showSupabaseSavedToast();
     setStatus("Link updated.");
     cancelEditingLink();
   };
@@ -1608,6 +1636,14 @@ export default function Home() {
 
   return (
     <main className="mx-auto min-h-screen max-w-md bg-slate-950 p-4 text-slate-100">
+      {supabaseToast ? (
+        <div
+          className="fixed bottom-6 left-1/2 z-[100] max-w-[90vw] -translate-x-1/2 rounded-lg border border-emerald-500/40 bg-emerald-950/95 px-4 py-2.5 text-center text-sm font-medium text-emerald-50 shadow-lg shadow-emerald-950/50"
+          role="status"
+        >
+          {supabaseToast}
+        </div>
+      ) : null}
       <button
         onClick={handleAdminAccess}
         className="fixed right-3 top-3 z-30 rounded-full bg-slate-800/70 px-2 py-1 text-[10px] text-slate-300 opacity-50 transition hover:opacity-100"
