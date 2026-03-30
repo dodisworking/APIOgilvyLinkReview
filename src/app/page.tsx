@@ -14,7 +14,16 @@ import {
   updateReviewLinkRecord,
 } from "@/lib/data-service";
 import { ApiCutdownsView } from "@/components/ApiCutdownsView";
+import { LinkComposerForm } from "@/components/LinkComposerForm";
 import { CUTDOWN_BATCH_IDS } from "@/lib/api-cutdowns";
+import {
+  emptyComposerDraft,
+  getNextBatchPostingVersionLabel,
+  getNextPostingVersionLabel,
+  groupLinksIntoBundles,
+  normalizeComposerDraft,
+  type LinkComposerDraft,
+} from "@/lib/link-bundles";
 import { loadCutdownAppData, saveCutdownAppData } from "@/lib/cutdown-storage";
 import { saveAppData } from "@/lib/storage";
 import {
@@ -170,17 +179,7 @@ export default function Home() {
     email: "",
   });
 
-  const [drafts, setDrafts] = useState<
-    Record<
-      string,
-      {
-        frameUrl: string;
-        note: string;
-        customMessage: string;
-        commentsDueAt: string;
-      }
-    >
-  >({});
+  const [drafts, setDrafts] = useState<Record<string, LinkComposerDraft>>({});
 
   const [adminBlastVideoId, setAdminBlastVideoId] = useState("");
   const [adminBlastLinkId, setAdminBlastLinkId] = useState("");
@@ -669,20 +668,6 @@ export default function Home() {
   };
   const isRecentLink = (postedAt: string) =>
     Date.now() - new Date(postedAt).getTime() <= 1000 * 60 * 60 * 24;
-  const getNextLinkVersion = (links: VideoItem["links"]) => {
-    const numericVersions = links
-      .map((link) => Number(link.version.replace(/[^0-9]/g, "")))
-      .filter((value) => Number.isFinite(value) && value > 0);
-    const next = numericVersions.length ? Math.max(...numericVersions) + 1 : 1;
-    return `Link #${next}`;
-  };
-  const getNextBatchLinkVersion = (links: VideoItem["links"]) => {
-    const numericVersions = links
-      .map((link) => Number(link.version.replace(/[^0-9]/g, "")))
-      .filter((value) => Number.isFinite(value) && value > 0);
-    const next = numericVersions.length ? Math.max(...numericVersions) + 1 : 1;
-    return `Batch link #${next}`;
-  };
   const cutdownBatchDraftKey = (batchId: CutdownBatchId) => `batch:${batchId}`;
   const togglePanel = (panel: Exclude<AppPanel, null>) => {
     if (activePanel === panel) {
@@ -736,12 +721,68 @@ export default function Home() {
   }, [selectedBlastVideo, selectedBlastLink]);
 
   const postLink = async (video: VideoItem) => {
+    const draft = normalizeComposerDraft(drafts[video.id]);
+
+    const buildMultiLinks = (
+      links: VideoItem["links"],
+      filled: { frameUrl: string; note: string }[],
+      useBatchLabel: boolean,
+    ) => {
+      const bundleId = crypto.randomUUID();
+      const postedAt = new Date().toISOString();
+      const parentVersion = useBatchLabel
+        ? getNextBatchPostingVersionLabel(links)
+        : getNextPostingVersionLabel(links);
+      return filled.map((slot, i) => ({
+        id: crypto.randomUUID(),
+        version: `${parentVersion} · ${i + 1}/${filled.length}`,
+        frameUrl: slot.frameUrl.trim(),
+        note: slot.note,
+        customMessage: draft.customMessage,
+        commentsDueAt: draft.commentsDueAt || undefined,
+        postedBy: "Admin",
+        postedAt,
+        bundleId,
+        bundleOrder: i,
+      }));
+    };
+
     if (video.id.startsWith("api-cut-")) {
       if (!cutdownData) {
         return;
       }
-      const draft = drafts[video.id];
-      if (!draft?.frameUrl) {
+
+      if (draft.multiMode) {
+        const filled = draft.slots
+          .slice(0, draft.slotCount)
+          .filter((s) => s.frameUrl.trim());
+        if (filled.length < 2) {
+          setStatus("Multi-link posting needs at least 2 Frame URLs.");
+          return;
+        }
+        setBusyVideoId(video.id);
+        setSavedVideoId(null);
+        setStatus("");
+        const newLinks = buildMultiLinks(video.links, filled, false);
+        const updatedVideos = cutdownData.videos.map((item) =>
+          item.id !== video.id
+            ? item
+            : { ...item, links: [...newLinks, ...item.links] },
+        );
+        const nextData = { ...cutdownData, videos: updatedVideos };
+        setCutdownData(nextData);
+        saveCutdownAppData(nextData);
+        setStatus(`Posted ${newLinks.length} links for ${video.title}.`);
+        setSavedVideoId(video.id);
+        setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
+        setBusyVideoId("");
+        setTimeout(() => {
+          setSavedVideoId((current) => (current === video.id ? null : current));
+        }, 2000);
+        return;
+      }
+
+      if (!draft.frameUrl.trim()) {
         setStatus("Frame.io link is required.");
         return;
       }
@@ -749,12 +790,12 @@ export default function Home() {
       setBusyVideoId(video.id);
       setSavedVideoId(null);
       setStatus("");
-      const autoVersion = getNextLinkVersion(video.links);
+      const autoVersion = getNextPostingVersionLabel(video.links);
       const postedAt = new Date().toISOString();
       const newLink = {
         id: crypto.randomUUID(),
         version: autoVersion,
-        frameUrl: draft.frameUrl,
+        frameUrl: draft.frameUrl.trim(),
         note: draft.note,
         customMessage: draft.customMessage,
         commentsDueAt: draft.commentsDueAt || undefined,
@@ -777,15 +818,7 @@ export default function Home() {
       saveCutdownAppData(nextData);
       setStatus(`Posted ${autoVersion} for ${video.title}.`);
       setSavedVideoId(video.id);
-      setDrafts((current) => ({
-        ...current,
-        [video.id]: {
-          frameUrl: "",
-          note: "",
-          customMessage: "",
-          commentsDueAt: "",
-        },
-      }));
+      setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
       setBusyVideoId("");
       setTimeout(() => {
         setSavedVideoId((current) => (current === video.id ? null : current));
@@ -796,8 +829,71 @@ export default function Home() {
     if (!data) {
       return;
     }
-    const draft = drafts[video.id];
-    if (!draft?.frameUrl) {
+
+    if (draft.multiMode) {
+      const filled = draft.slots
+        .slice(0, draft.slotCount)
+        .filter((s) => s.frameUrl.trim());
+      if (filled.length < 2) {
+        setStatus("Multi-link posting needs at least 2 Frame URLs.");
+        return;
+      }
+      setBusyVideoId(video.id);
+      setSavedVideoId(null);
+      setStatus("");
+      const newLinks = buildMultiLinks(video.links, filled, false);
+      const updatedVideos = data.videos.map((item) =>
+        item.id !== video.id ? item : { ...item, links: [...newLinks, ...item.links] },
+      );
+      const nextData = { ...data, videos: updatedVideos };
+      setData(nextData);
+      saveAppData(nextData);
+
+      try {
+        for (let i = 0; i < newLinks.length; i += 1) {
+          const nl = newLinks[i];
+          await saveReviewLink({
+            videoId: video.id,
+            version: nl.version,
+            frameUrl: nl.frameUrl,
+            note: nl.note,
+            customMessage: nl.customMessage,
+            commentsDueAt: nl.commentsDueAt,
+            postedBy: "Admin",
+            bundleId: nl.bundleId,
+            bundleOrder: nl.bundleOrder,
+          });
+        }
+        const parentLabel = newLinks[0].version.replace(/\s·\s\d+\/\d+$/, "");
+        setStatus(`Posted ${newLinks.length} links for ${video.title}.`);
+        setSavedVideoId(video.id);
+        setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
+        setPostDistributionPrompt({
+          videoId: video.id,
+          videoTitle: video.title,
+          linkId: newLinks[0].id,
+          version: `${parentLabel} (${newLinks.length} links)`,
+          frameUrl: newLinks[0].frameUrl,
+          commentsDueAt: newLinks[0].commentsDueAt,
+        });
+        setPostDistributionSubject(`${video.title} — ${newLinks.length} review links ready`);
+        setPostSelectedRecipientIds(data.contacts.map((contact) => contact.id));
+        setPostDistributionMessage(
+          `Hey team, ${newLinks.length} Frame links for ${video.title} (${parentLabel}) are ready. Primary: ${newLinks[0].frameUrl}. Feedback by ${formatDue(newLinks[0].commentsDueAt)}.`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to save link.";
+        setStatus(`Link save failed: ${message}`);
+      } finally {
+        setBusyVideoId("");
+        setTimeout(() => {
+          setSavedVideoId((current) => (current === video.id ? null : current));
+        }, 2000);
+      }
+      return;
+    }
+
+    if (!draft.frameUrl.trim()) {
       setStatus("Frame.io link is required.");
       return;
     }
@@ -805,12 +901,12 @@ export default function Home() {
     setBusyVideoId(video.id);
     setSavedVideoId(null);
     setStatus("");
-    const autoVersion = getNextLinkVersion(video.links);
+    const autoVersion = getNextPostingVersionLabel(video.links);
     const postedAt = new Date().toISOString();
     const newLink = {
       id: crypto.randomUUID(),
       version: autoVersion,
-      frameUrl: draft.frameUrl,
+      frameUrl: draft.frameUrl.trim(),
       note: draft.note,
       customMessage: draft.customMessage,
       commentsDueAt: draft.commentsDueAt || undefined,
@@ -836,26 +932,16 @@ export default function Home() {
       await saveReviewLink({
         videoId: video.id,
         version: autoVersion,
-        frameUrl: draft.frameUrl,
+        frameUrl: draft.frameUrl.trim(),
         note: draft.note,
         customMessage: draft.customMessage,
         commentsDueAt: draft.commentsDueAt || undefined,
         postedBy: "Admin",
       });
 
-      setStatus(
-        `Posted ${autoVersion} for ${video.title}.`,
-      );
+      setStatus(`Posted ${autoVersion} for ${video.title}.`);
       setSavedVideoId(video.id);
-      setDrafts((current) => ({
-        ...current,
-        [video.id]: {
-          frameUrl: "",
-          note: "",
-          customMessage: "",
-          commentsDueAt: "",
-        },
-      }));
+      setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
       setPostDistributionPrompt({
         videoId: video.id,
         videoTitle: video.title,
@@ -864,9 +950,7 @@ export default function Home() {
         frameUrl: newLink.frameUrl,
         commentsDueAt: newLink.commentsDueAt,
       });
-      setPostDistributionSubject(
-        `${video.title} - ${newLink.version} Ready for Review`,
-      );
+      setPostDistributionSubject(`${video.title} - ${newLink.version} Ready for Review`);
       setPostSelectedRecipientIds(data.contacts.map((contact) => contact.id));
       setPostDistributionMessage(
         `Hey team, we have a new posting for ${video.title} (${newLink.version}). Please share feedback by ${formatDue(newLink.commentsDueAt)}.`,
@@ -976,6 +1060,7 @@ export default function Home() {
     setData(nextData);
     saveAppData(nextData);
 
+    const existingLink = video.links.find((l) => l.id === linkId);
     await updateReviewLinkRecord({
       linkId,
       version: editLinkDraft.version.trim(),
@@ -983,6 +1068,8 @@ export default function Home() {
       note: editLinkDraft.note,
       customMessage: editLinkDraft.customMessage,
       commentsDueAt: editLinkDraft.commentsDueAt || undefined,
+      bundleId: existingLink?.bundleId,
+      bundleOrder: existingLink?.bundleOrder,
     });
 
     setStatus("Link updated.");
@@ -1046,13 +1133,60 @@ export default function Home() {
       return;
     }
     const dkey = cutdownBatchDraftKey(batchId);
-    const draft = drafts[dkey] ?? {
-      frameUrl: "",
-      note: "",
-      customMessage: "",
-      commentsDueAt: "",
+    const draft = normalizeComposerDraft(drafts[dkey]);
+    const existing = cutdownData.batchLinks[batchId] ?? [];
+
+    const buildBatchMulti = (filled: { frameUrl: string; note: string }[]) => {
+      const bundleId = crypto.randomUUID();
+      const postedAt = new Date().toISOString();
+      const parentVersion = getNextBatchPostingVersionLabel(existing);
+      return filled.map((slot, i) => ({
+        id: crypto.randomUUID(),
+        version: `${parentVersion} · ${i + 1}/${filled.length}`,
+        frameUrl: slot.frameUrl.trim(),
+        note: slot.note,
+        customMessage: draft.customMessage,
+        commentsDueAt: draft.commentsDueAt || undefined,
+        postedBy: "Admin",
+        postedAt,
+        bundleId,
+        bundleOrder: i,
+      }));
     };
-    if (!draft.frameUrl) {
+
+    if (draft.multiMode) {
+      const filled = draft.slots
+        .slice(0, draft.slotCount)
+        .filter((s) => s.frameUrl.trim());
+      if (filled.length < 2) {
+        setStatus("Multi-link posting needs at least 2 Frame URLs.");
+        return;
+      }
+      setBusyVideoId(dkey);
+      setSavedVideoId(null);
+      setStatus("");
+      const newLinks = buildBatchMulti(filled);
+      const nextData: CutdownAppData = {
+        ...cutdownData,
+        batchLinks: {
+          ...cutdownData.batchLinks,
+          [batchId]: [...newLinks, ...existing],
+        },
+      };
+      setCutdownData(nextData);
+      saveCutdownAppData(nextData);
+      setStatus(`Posted ${newLinks.length} batch links for Batch ${batchId}.`);
+      setSavedVideoId(dkey);
+      setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
+      setBusyVideoId("");
+      setOpenCutdownBatchComposer(null);
+      setTimeout(() => {
+        setSavedVideoId((current) => (current === dkey ? null : current));
+      }, 2000);
+      return;
+    }
+
+    if (!draft.frameUrl.trim()) {
       setStatus("Frame.io link is required.");
       return;
     }
@@ -1060,13 +1194,12 @@ export default function Home() {
     setBusyVideoId(dkey);
     setSavedVideoId(null);
     setStatus("");
-    const existing = cutdownData.batchLinks[batchId];
-    const autoVersion = getNextBatchLinkVersion(existing);
+    const autoVersion = getNextBatchPostingVersionLabel(existing);
     const postedAt = new Date().toISOString();
     const newLink = {
       id: crypto.randomUUID(),
       version: autoVersion,
-      frameUrl: draft.frameUrl,
+      frameUrl: draft.frameUrl.trim(),
       note: draft.note,
       customMessage: draft.customMessage,
       commentsDueAt: draft.commentsDueAt || undefined,
@@ -1085,15 +1218,7 @@ export default function Home() {
     saveCutdownAppData(nextData);
     setStatus(`Posted ${autoVersion} for Batch ${batchId}.`);
     setSavedVideoId(dkey);
-    setDrafts((current) => ({
-      ...current,
-      [dkey]: {
-        frameUrl: "",
-        note: "",
-        customMessage: "",
-        commentsDueAt: "",
-      },
-    }));
+    setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
     setBusyVideoId("");
     setOpenCutdownBatchComposer(null);
     setTimeout(() => {
@@ -1724,13 +1849,8 @@ export default function Home() {
             <h2 className="text-base font-semibold">{day}</h2>
             <div className="mt-3 space-y-3">
               {(groupedSchedule.groups[day] ?? []).map((video) => {
-                const draft = drafts[video.id] ?? {
-                  frameUrl: "",
-                  note: "",
-                  customMessage: "",
-                  commentsDueAt: "",
-                };
                 const ownerName = getOwnerName(video);
+                const linkBundles = groupLinksIntoBundles(video.links);
                 const isApproved = Boolean(approvedByVideoId[video.id]);
 
                 return (
@@ -1785,125 +1905,146 @@ export default function Home() {
                     {video.links.length > 0 ? (
                       <div className="mt-3 space-y-2">
                         {(expandedHistoryByVideo[video.id]
-                          ? video.links
-                          : [video.links[0]]
-                        ).map((link, index) => (
-                          <div key={link.id} className="rounded-md bg-slate-900 p-2">
-                            {editingLinkId === link.id ? (
-                              <div className="space-y-2">
-                                <input
-                                  value={editLinkDraft.version}
-                                  onChange={(event) =>
-                                    setEditLinkDraft((current) => ({
-                                      ...current,
-                                      version: event.target.value,
-                                    }))
+                          ? linkBundles
+                          : linkBundles.slice(0, 1)
+                        ).map((bundle, bundleIdx) => (
+                          <div
+                            key={bundle[0]?.bundleId ?? bundle[0]?.id ?? `bundle-${bundleIdx}`}
+                            className="rounded-md border border-slate-800 bg-slate-900 p-2"
+                          >
+                            {bundle.length > 1 ? (
+                              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                                One posting · {bundle.length} Frame links
+                              </p>
+                            ) : null}
+                            <div className="space-y-2">
+                              {bundle.map((link, linkIdx) => (
+                                <div
+                                  key={link.id}
+                                  className={
+                                    bundle.length > 1
+                                      ? "rounded-md border border-slate-800 bg-slate-950 p-2"
+                                      : ""
                                   }
-                                  placeholder="Version"
-                                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                />
-                                <input
-                                  value={editLinkDraft.frameUrl}
-                                  onChange={(event) =>
-                                    setEditLinkDraft((current) => ({
-                                      ...current,
-                                      frameUrl: event.target.value,
-                                    }))
-                                  }
-                                  placeholder="Frame.io link"
-                                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                />
-                                <textarea
-                                  value={editLinkDraft.customMessage}
-                                  onChange={(event) =>
-                                    setEditLinkDraft((current) => ({
-                                      ...current,
-                                      customMessage: event.target.value,
-                                    }))
-                                  }
-                                  placeholder="Notes"
-                                  className="h-16 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                />
-                                <input
-                                  type="text"
-                                  value={editLinkDraft.commentsDueAt}
-                                  onChange={(event) =>
-                                    setEditLinkDraft((current) => ({
-                                      ...current,
-                                      commentsDueAt: event.target.value,
-                                    }))
-                                  }
-                                  placeholder="Feedback due (EOD Friday or specific date/time)"
-                                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                />
-                                <div className="flex gap-2">
-                                  <button
-                                    onClick={() => saveEditedLink(video, link.id)}
-                                    className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-semibold"
-                                  >
-                                    Save
-                                  </button>
-                                  <button
-                                    onClick={cancelEditingLink}
-                                    className="rounded-md bg-slate-700 px-2 py-1 text-xs"
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <>
-                                <div className="mb-1 flex gap-2">
-                                  {index === 0 ? (
-                                    <span className="rounded-full bg-green-600 px-2 py-0.5 text-[10px] font-bold text-white">
-                                      NEWEST
-                                    </span>
-                                  ) : null}
-                                  {isRecentLink(link.postedAt) ? (
-                                    <span className="rounded-full bg-green-700 px-2 py-0.5 text-[10px] font-semibold text-white">
-                                      Posted recently at {formatPosted(link.postedAt)}
-                                    </span>
-                                  ) : null}
-                                </div>
-                                <p className="text-xs font-semibold">{link.version}</p>
-                                <p className="text-[11px] text-yellow-300">
-                                  Posted at: {formatPosted(link.postedAt)}
-                                </p>
-                                <a
-                                  href={link.frameUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-xs text-blue-300 underline"
                                 >
-                                  Open Frame.io
-                                </a>
-                                <p className="mt-1 text-[11px] text-slate-400">
-                                  {link.customMessage || link.note}
-                                </p>
-                                <p className="text-[11px] text-red-300">
-                                  Feedback due: {formatDue(link.commentsDueAt)}
-                                </p>
-                                {isAdmin ? (
-                                  <div className="mt-2 flex gap-2">
-                                    <button
-                                      onClick={() => startEditingLink(link)}
-                                      className="rounded-md bg-blue-700 px-2 py-1 text-xs"
-                                    >
-                                      Edit
-                                    </button>
-                                    <button
-                                      onClick={() => deleteLink(video, link.id)}
-                                      className="rounded-md bg-red-700 px-2 py-1 text-xs"
-                                    >
-                                      Delete
-                                    </button>
-                                  </div>
-                                ) : null}
-                              </>
-                            )}
+                                  {editingLinkId === link.id ? (
+                                    <div className="space-y-2">
+                                      <input
+                                        value={editLinkDraft.version}
+                                        onChange={(event) =>
+                                          setEditLinkDraft((current) => ({
+                                            ...current,
+                                            version: event.target.value,
+                                          }))
+                                        }
+                                        placeholder="Version"
+                                        className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                      />
+                                      <input
+                                        value={editLinkDraft.frameUrl}
+                                        onChange={(event) =>
+                                          setEditLinkDraft((current) => ({
+                                            ...current,
+                                            frameUrl: event.target.value,
+                                          }))
+                                        }
+                                        placeholder="Frame.io link"
+                                        className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                      />
+                                      <textarea
+                                        value={editLinkDraft.customMessage}
+                                        onChange={(event) =>
+                                          setEditLinkDraft((current) => ({
+                                            ...current,
+                                            customMessage: event.target.value,
+                                          }))
+                                        }
+                                        placeholder="Notes"
+                                        className="h-16 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                      />
+                                      <input
+                                        type="text"
+                                        value={editLinkDraft.commentsDueAt}
+                                        onChange={(event) =>
+                                          setEditLinkDraft((current) => ({
+                                            ...current,
+                                            commentsDueAt: event.target.value,
+                                          }))
+                                        }
+                                        placeholder="Feedback due (EOD Friday or specific date/time)"
+                                        className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                      />
+                                      <div className="flex gap-2">
+                                        <button
+                                          onClick={() => saveEditedLink(video, link.id)}
+                                          className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-semibold"
+                                        >
+                                          Save
+                                        </button>
+                                        <button
+                                          onClick={cancelEditingLink}
+                                          className="rounded-md bg-slate-700 px-2 py-1 text-xs"
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <div className="mb-1 flex gap-2">
+                                        {bundleIdx === 0 && linkIdx === 0 ? (
+                                          <span className="rounded-full bg-green-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                                            NEWEST
+                                          </span>
+                                        ) : null}
+                                        {isRecentLink(link.postedAt) ? (
+                                          <span className="rounded-full bg-green-700 px-2 py-0.5 text-[10px] font-semibold text-white">
+                                            Posted recently at {formatPosted(link.postedAt)}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      <p className="text-xs font-semibold">{link.version}</p>
+                                      <p className="text-[11px] text-yellow-300">
+                                        Posted at: {formatPosted(link.postedAt)}
+                                      </p>
+                                      <a
+                                        href={link.frameUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-xs text-blue-300 underline"
+                                      >
+                                        Open Frame.io
+                                      </a>
+                                      <p className="mt-1 text-[11px] text-slate-400">
+                                        {link.customMessage || link.note}
+                                      </p>
+                                      <p className="text-[11px] text-red-300">
+                                        Feedback due: {formatDue(link.commentsDueAt)}
+                                      </p>
+                                      {isAdmin ? (
+                                        <div className="mt-2 flex gap-2">
+                                          <button
+                                            onClick={() => startEditingLink(link)}
+                                            className="rounded-md bg-blue-700 px-2 py-1 text-xs"
+                                          >
+                                            Edit
+                                          </button>
+                                          <button
+                                            onClick={() => deleteLink(video, link.id)}
+                                            className="rounded-md bg-red-700 px-2 py-1 text-xs"
+                                          >
+                                            Delete
+                                          </button>
+                                        </div>
+                                      ) : null}
+                                    </>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         ))}
-                        {video.links.length > 1 ? (
+                        {linkBundles.length > 1 ? (
                           <button
                             onClick={() =>
                               setExpandedHistoryByVideo((current) => ({
@@ -1916,7 +2057,7 @@ export default function Home() {
                             🎬{" "}
                             {expandedHistoryByVideo[video.id]
                               ? "Hide film history"
-                              : `Film history (${video.links.length - 1})`}
+                              : `Film history (${linkBundles.length - 1} older postings)`}
                           </button>
                         ) : null}
                       </div>
@@ -1927,61 +2068,17 @@ export default function Home() {
                     {isAdmin && openComposerVideoId === video.id ? (
                       <div className="mt-3 space-y-2 rounded-md border border-slate-800 p-2">
                         <p className="text-xs font-semibold text-slate-300">
-                          + Add review link (auto labels Link #1, Link #2...)
+                          + Add review link (single or multi-link posting)
                         </p>
-                        <input
-                          value={draft.frameUrl}
-                          onChange={(event) =>
-                            setDrafts((current) => ({
-                              ...current,
-                              [video.id]: { ...draft, frameUrl: event.target.value },
-                            }))
-                          }
-                          placeholder="Frame.io link"
-                          className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+                        <LinkComposerForm
+                          draftKey={video.id}
+                          draft={normalizeComposerDraft(drafts[video.id])}
+                          setDrafts={setDrafts}
+                          onSubmit={() => void postLink(video)}
+                          busy={busyVideoId === video.id}
+                          saved={savedVideoId === video.id}
+                          submitLabel="Record link"
                         />
-                        <textarea
-                          value={draft.customMessage}
-                          onChange={(event) =>
-                            setDrafts((current) => ({
-                              ...current,
-                              [video.id]: { ...draft, customMessage: event.target.value },
-                            }))
-                          }
-                          placeholder="Notes for admin"
-                          className="h-16 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
-                        />
-                        <input
-                          type="text"
-                          value={draft.commentsDueAt}
-                          onChange={(event) =>
-                            setDrafts((current) => ({
-                              ...current,
-                              [video.id]: { ...draft, commentsDueAt: event.target.value },
-                            }))
-                          }
-                          placeholder="Ask by when next round of feedback? (EOD Friday or time/date)"
-                          className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
-                        />
-                        <button
-                          onClick={() => postLink(video)}
-                          disabled={busyVideoId === video.id}
-                          className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-semibold disabled:opacity-70"
-                        >
-                          {busyVideoId === video.id ? (
-                            <span className="inline-flex items-center gap-2">
-                              <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                              Saving...
-                            </span>
-                          ) : (
-                            "Record link"
-                          )}
-                        </button>
-                        {savedVideoId === video.id ? (
-                          <p className="text-xs font-semibold text-emerald-300">
-                            Saved. You can add another link now.
-                          </p>
-                        ) : null}
                       </div>
                     ) : null}
                   </div>

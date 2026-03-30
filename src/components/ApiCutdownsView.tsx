@@ -2,22 +2,17 @@
 
 import type { Dispatch, SetStateAction } from "react";
 import { CutdownSchedulePanel } from "@/components/CutdownSchedulePanel";
+import { LinkComposerForm } from "@/components/LinkComposerForm";
 import {
   API_CUTDOWN_BATCH_ROSTER,
   CUTDOWN_BATCH_IDS,
   getCutdownBatch,
   getCutdownScheduleStatus,
 } from "@/lib/api-cutdowns";
+import { groupLinksIntoBundles, normalizeComposerDraft, type LinkComposerDraft } from "@/lib/link-bundles";
 import type { CutdownBatchId, ReviewLinkVersion, VideoItem } from "@/types";
 
 type CutdownPanel = "status" | "links" | "schedule" | null;
-
-type DraftShape = {
-  frameUrl: string;
-  note: string;
-  customMessage: string;
-  commentsDueAt: string;
-};
 
 interface ApiCutdownsViewProps {
   cutdownVideos: VideoItem[];
@@ -34,8 +29,8 @@ interface ApiCutdownsViewProps {
   getCutdownBadgeClass: (label: string) => string;
   setCutdownApprovedState: (videoId: string, value: "approved" | "auto") => void;
   toggleCutdownApproved: (videoId: string) => void;
-  drafts: Record<string, DraftShape>;
-  setDrafts: Dispatch<SetStateAction<Record<string, DraftShape>>>;
+  drafts: Record<string, LinkComposerDraft>;
+  setDrafts: Dispatch<SetStateAction<Record<string, LinkComposerDraft>>>;
   expandedHistoryByVideo: Record<string, boolean>;
   setExpandedHistoryByVideo: Dispatch<SetStateAction<Record<string, boolean>>>;
   editingLinkId: string | null;
@@ -269,12 +264,7 @@ export function ApiCutdownsView({
               {CUTDOWN_BATCH_IDS.map((batchId) => {
                 const dkey = cutdownBatchDraftKey(batchId);
                 const links = batchLinks[batchId] ?? [];
-                const draft = drafts[dkey] ?? {
-                  frameUrl: "",
-                  note: "",
-                  customMessage: "",
-                  commentsDueAt: "",
-                };
+                const linkBundles = groupLinksIntoBundles(links);
                 const expandKey = dkey;
                 return (
                   <div
@@ -307,129 +297,151 @@ export function ApiCutdownsView({
 
                     {links.length > 0 ? (
                       <div className="mt-3 space-y-2">
-                        {(expandedHistoryByVideo[expandKey] ? links : [links[0]]).map(
-                          (link, index) => (
-                            <div key={link.id} className="rounded-md bg-slate-900 p-2">
-                              {editingLinkId === link.id ? (
-                                <div className="space-y-2">
-                                  <input
-                                    value={editLinkDraft.version}
-                                    onChange={(event) =>
-                                      setEditLinkDraft((current) => ({
-                                        ...current,
-                                        version: event.target.value,
-                                      }))
-                                    }
-                                    placeholder="Version"
-                                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                  />
-                                  <input
-                                    value={editLinkDraft.frameUrl}
-                                    onChange={(event) =>
-                                      setEditLinkDraft((current) => ({
-                                        ...current,
-                                        frameUrl: event.target.value,
-                                      }))
-                                    }
-                                    placeholder="Frame.io link"
-                                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                  />
-                                  <textarea
-                                    value={editLinkDraft.customMessage}
-                                    onChange={(event) =>
-                                      setEditLinkDraft((current) => ({
-                                        ...current,
-                                        customMessage: event.target.value,
-                                      }))
-                                    }
-                                    placeholder="Notes"
-                                    className="h-16 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                  />
-                                  <input
-                                    type="text"
-                                    value={editLinkDraft.commentsDueAt}
-                                    onChange={(event) =>
-                                      setEditLinkDraft((current) => ({
-                                        ...current,
-                                        commentsDueAt: event.target.value,
-                                      }))
-                                    }
-                                    placeholder="Feedback due (optional)"
-                                    className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                  />
-                                  <div className="flex gap-2">
-                                    <button
-                                      type="button"
-                                      onClick={() => void saveEditedCutdownLinkById(link.id)}
-                                      className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-semibold"
-                                    >
-                                      Save
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={cancelEditingLink}
-                                      className="rounded-md bg-slate-700 px-2 py-1 text-xs"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <>
-                                  <div className="mb-1 flex gap-2">
-                                    {index === 0 ? (
-                                      <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold text-white">
-                                        NEWEST
-                                      </span>
-                                    ) : null}
-                                    {isRecentLink(link.postedAt) ? (
-                                      <span className="rounded-full bg-cyan-900 px-2 py-0.5 text-[10px] font-semibold text-cyan-100">
-                                        Posted {formatPosted(link.postedAt)}
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                  <p className="text-xs font-semibold">{link.version}</p>
-                                  <p className="text-[11px] text-yellow-300">
-                                    Posted at: {formatPosted(link.postedAt)}
-                                  </p>
-                                  <a
-                                    href={link.frameUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-xs text-blue-300 underline"
-                                  >
-                                    Open Frame.io
-                                  </a>
-                                  <p className="mt-1 text-[11px] text-slate-400">
-                                    {link.customMessage || link.note}
-                                  </p>
-                                  <p className="text-[11px] text-red-300">
-                                    Feedback due: {formatDue(link.commentsDueAt)}
-                                  </p>
-                                  {isAdmin ? (
-                                    <div className="mt-2 flex gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => startEditingLink(link)}
-                                        className="rounded-md bg-blue-700 px-2 py-1 text-xs"
-                                      >
-                                        Edit
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => void deleteCutdownLinkById(link.id)}
-                                        className="rounded-md bg-red-700 px-2 py-1 text-xs"
-                                      >
-                                        Delete
-                                      </button>
+                        {(expandedHistoryByVideo[expandKey]
+                          ? linkBundles
+                          : linkBundles.slice(0, 1)
+                        ).map((bundle, bundleIdx) => (
+                          <div
+                            key={bundle[0]?.bundleId ?? bundle[0]?.id ?? `b-${bundleIdx}`}
+                            className="rounded-md border border-cyan-900/40 bg-slate-900 p-2"
+                          >
+                            {bundle.length > 1 ? (
+                              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-cyan-200/80">
+                                One posting · {bundle.length} Frame links
+                              </p>
+                            ) : null}
+                            <div className="space-y-2">
+                              {bundle.map((link, linkIdx) => (
+                                <div
+                                  key={link.id}
+                                  className={
+                                    bundle.length > 1
+                                      ? "rounded-md border border-slate-800 bg-slate-950 p-2"
+                                      : ""
+                                  }
+                                >
+                                  {editingLinkId === link.id ? (
+                                    <div className="space-y-2">
+                                      <input
+                                        value={editLinkDraft.version}
+                                        onChange={(event) =>
+                                          setEditLinkDraft((current) => ({
+                                            ...current,
+                                            version: event.target.value,
+                                          }))
+                                        }
+                                        placeholder="Version"
+                                        className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                      />
+                                      <input
+                                        value={editLinkDraft.frameUrl}
+                                        onChange={(event) =>
+                                          setEditLinkDraft((current) => ({
+                                            ...current,
+                                            frameUrl: event.target.value,
+                                          }))
+                                        }
+                                        placeholder="Frame.io link"
+                                        className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                      />
+                                      <textarea
+                                        value={editLinkDraft.customMessage}
+                                        onChange={(event) =>
+                                          setEditLinkDraft((current) => ({
+                                            ...current,
+                                            customMessage: event.target.value,
+                                          }))
+                                        }
+                                        placeholder="Notes"
+                                        className="h-16 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                      />
+                                      <input
+                                        type="text"
+                                        value={editLinkDraft.commentsDueAt}
+                                        onChange={(event) =>
+                                          setEditLinkDraft((current) => ({
+                                            ...current,
+                                            commentsDueAt: event.target.value,
+                                          }))
+                                        }
+                                        placeholder="Feedback due (optional)"
+                                        className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                      />
+                                      <div className="flex gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => void saveEditedCutdownLinkById(link.id)}
+                                          className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-semibold"
+                                        >
+                                          Save
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={cancelEditingLink}
+                                          className="rounded-md bg-slate-700 px-2 py-1 text-xs"
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
                                     </div>
-                                  ) : null}
-                                </>
-                              )}
+                                  ) : (
+                                    <>
+                                      <div className="mb-1 flex gap-2">
+                                        {bundleIdx === 0 && linkIdx === 0 ? (
+                                          <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold text-white">
+                                            NEWEST
+                                          </span>
+                                        ) : null}
+                                        {isRecentLink(link.postedAt) ? (
+                                          <span className="rounded-full bg-cyan-900 px-2 py-0.5 text-[10px] font-semibold text-cyan-100">
+                                            Posted {formatPosted(link.postedAt)}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      <p className="text-xs font-semibold">{link.version}</p>
+                                      <p className="text-[11px] text-yellow-300">
+                                        Posted at: {formatPosted(link.postedAt)}
+                                      </p>
+                                      <a
+                                        href={link.frameUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-xs text-blue-300 underline"
+                                      >
+                                        Open Frame.io
+                                      </a>
+                                      <p className="mt-1 text-[11px] text-slate-400">
+                                        {link.customMessage || link.note}
+                                      </p>
+                                      <p className="text-[11px] text-red-300">
+                                        Feedback due: {formatDue(link.commentsDueAt)}
+                                      </p>
+                                      {isAdmin ? (
+                                        <div className="mt-2 flex gap-2">
+                                          <button
+                                            type="button"
+                                            onClick={() => startEditingLink(link)}
+                                            className="rounded-md bg-blue-700 px-2 py-1 text-xs"
+                                          >
+                                            Edit
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => void deleteCutdownLinkById(link.id)}
+                                            className="rounded-md bg-red-700 px-2 py-1 text-xs"
+                                          >
+                                            Delete
+                                          </button>
+                                        </div>
+                                      ) : null}
+                                    </>
+                                  )}
+                                </div>
+                              ))}
                             </div>
-                          ),
-                        )}
-                        {links.length > 1 ? (
+                          </div>
+                        ))}
+                        {linkBundles.length > 1 ? (
                           <button
                             type="button"
                             onClick={() =>
@@ -442,7 +454,7 @@ export function ApiCutdownsView({
                           >
                             {expandedHistoryByVideo[expandKey]
                               ? "Hide batch link history"
-                              : `Batch link history (${links.length - 1} older)`}
+                              : `Batch link history (${linkBundles.length - 1} older postings)`}
                           </button>
                         ) : null}
                       </div>
@@ -452,52 +464,19 @@ export function ApiCutdownsView({
 
                     {isAdmin && openCutdownBatchComposer === batchId ? (
                       <div className="mt-3 space-y-2 rounded-md border border-cyan-900/50 p-2">
-                        <p className="text-xs font-semibold text-cyan-200">Add batch link</p>
-                        <input
-                          value={draft.frameUrl}
-                          onChange={(event) =>
-                            setDrafts((current) => ({
-                              ...current,
-                              [dkey]: { ...draft, frameUrl: event.target.value },
-                            }))
-                          }
-                          placeholder="Frame.io link"
-                          className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+                        <p className="text-xs font-semibold text-cyan-200">
+                          Add batch link (single or multi-link posting)
+                        </p>
+                        <LinkComposerForm
+                          draftKey={dkey}
+                          draft={normalizeComposerDraft(drafts[dkey])}
+                          setDrafts={setDrafts}
+                          onSubmit={() => void postCutdownBatchLink(batchId)}
+                          busy={busyVideoId === dkey}
+                          saved={savedVideoId === dkey}
+                          submitLabel="Save batch link"
+                          accentClass="bg-cyan-600"
                         />
-                        <textarea
-                          value={draft.customMessage}
-                          onChange={(event) =>
-                            setDrafts((current) => ({
-                              ...current,
-                              [dkey]: { ...draft, customMessage: event.target.value },
-                            }))
-                          }
-                          placeholder="Notes"
-                          className="h-16 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
-                        />
-                        <input
-                          type="text"
-                          value={draft.commentsDueAt}
-                          onChange={(event) =>
-                            setDrafts((current) => ({
-                              ...current,
-                              [dkey]: { ...draft, commentsDueAt: event.target.value },
-                            }))
-                          }
-                          placeholder="Feedback due (optional)"
-                          className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => void postCutdownBatchLink(batchId)}
-                          disabled={busyVideoId === dkey}
-                          className="rounded-md bg-cyan-600 px-3 py-2 text-xs font-semibold disabled:opacity-70"
-                        >
-                          {busyVideoId === dkey ? "Saving…" : "Save batch link"}
-                        </button>
-                        {savedVideoId === dkey ? (
-                          <p className="text-xs font-semibold text-cyan-300">Saved.</p>
-                        ) : null}
                       </div>
                     ) : null}
                   </div>
@@ -517,12 +496,7 @@ export function ApiCutdownsView({
 
           <div className="space-y-3">
             {cutdownVideos.map((video) => {
-              const draft = drafts[video.id] ?? {
-                frameUrl: "",
-                note: "",
-                customMessage: "",
-                commentsDueAt: "",
-              };
+              const spotBundles = groupLinksIntoBundles(video.links);
               const isApproved = Boolean(video.isApproved);
               return (
                 <div key={video.id} className="rounded-lg border border-slate-800 bg-slate-950 p-3">
@@ -573,129 +547,151 @@ export function ApiCutdownsView({
 
                   {video.links.length > 0 ? (
                     <div className="mt-3 space-y-2">
-                      {(expandedHistoryByVideo[video.id] ? video.links : [video.links[0]]).map(
-                        (link, index) => (
-                          <div key={link.id} className="rounded-md bg-slate-900 p-2">
-                            {editingLinkId === link.id ? (
-                              <div className="space-y-2">
-                                <input
-                                  value={editLinkDraft.version}
-                                  onChange={(event) =>
-                                    setEditLinkDraft((current) => ({
-                                      ...current,
-                                      version: event.target.value,
-                                    }))
-                                  }
-                                  placeholder="Version"
-                                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                />
-                                <input
-                                  value={editLinkDraft.frameUrl}
-                                  onChange={(event) =>
-                                    setEditLinkDraft((current) => ({
-                                      ...current,
-                                      frameUrl: event.target.value,
-                                    }))
-                                  }
-                                  placeholder="Frame.io link"
-                                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                />
-                                <textarea
-                                  value={editLinkDraft.customMessage}
-                                  onChange={(event) =>
-                                    setEditLinkDraft((current) => ({
-                                      ...current,
-                                      customMessage: event.target.value,
-                                    }))
-                                  }
-                                  placeholder="Notes"
-                                  className="h-16 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                />
-                                <input
-                                  type="text"
-                                  value={editLinkDraft.commentsDueAt}
-                                  onChange={(event) =>
-                                    setEditLinkDraft((current) => ({
-                                      ...current,
-                                      commentsDueAt: event.target.value,
-                                    }))
-                                  }
-                                  placeholder="Feedback due (optional)"
-                                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
-                                />
-                                <div className="flex gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => void saveEditedLink(video, link.id)}
-                                    className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-semibold"
-                                  >
-                                    Save
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={cancelEditingLink}
-                                    className="rounded-md bg-slate-700 px-2 py-1 text-xs"
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <>
-                                <div className="mb-1 flex gap-2">
-                                  {index === 0 ? (
-                                    <span className="rounded-full bg-green-600 px-2 py-0.5 text-[10px] font-bold text-white">
-                                      NEWEST
-                                    </span>
-                                  ) : null}
-                                  {isRecentLink(link.postedAt) ? (
-                                    <span className="rounded-full bg-green-700 px-2 py-0.5 text-[10px] font-semibold text-white">
-                                      Posted {formatPosted(link.postedAt)}
-                                    </span>
-                                  ) : null}
-                                </div>
-                                <p className="text-xs font-semibold">{link.version}</p>
-                                <p className="text-[11px] text-yellow-300">
-                                  Posted at: {formatPosted(link.postedAt)}
-                                </p>
-                                <a
-                                  href={link.frameUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="text-xs text-blue-300 underline"
-                                >
-                                  Open Frame.io
-                                </a>
-                                <p className="mt-1 text-[11px] text-slate-400">
-                                  {link.customMessage || link.note}
-                                </p>
-                                <p className="text-[11px] text-red-300">
-                                  Feedback due: {formatDue(link.commentsDueAt)}
-                                </p>
-                                {isAdmin ? (
-                                  <div className="mt-2 flex gap-2">
-                                    <button
-                                      type="button"
-                                      onClick={() => startEditingLink(link)}
-                                      className="rounded-md bg-blue-700 px-2 py-1 text-xs"
-                                    >
-                                      Edit
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => void deleteLink(video, link.id)}
-                                      className="rounded-md bg-red-700 px-2 py-1 text-xs"
-                                    >
-                                      Delete
-                                    </button>
+                      {(expandedHistoryByVideo[video.id]
+                        ? spotBundles
+                        : spotBundles.slice(0, 1)
+                      ).map((bundle, bundleIdx) => (
+                        <div
+                          key={bundle[0]?.bundleId ?? bundle[0]?.id ?? `s-${bundleIdx}`}
+                          className="rounded-md border border-slate-800 bg-slate-900 p-2"
+                        >
+                          {bundle.length > 1 ? (
+                            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                              One posting · {bundle.length} Frame links
+                            </p>
+                          ) : null}
+                          <div className="space-y-2">
+                            {bundle.map((link, linkIdx) => (
+                              <div
+                                key={link.id}
+                                className={
+                                  bundle.length > 1
+                                    ? "rounded-md border border-slate-800 bg-slate-950 p-2"
+                                    : ""
+                                }
+                              >
+                                {editingLinkId === link.id ? (
+                                  <div className="space-y-2">
+                                    <input
+                                      value={editLinkDraft.version}
+                                      onChange={(event) =>
+                                        setEditLinkDraft((current) => ({
+                                          ...current,
+                                          version: event.target.value,
+                                        }))
+                                      }
+                                      placeholder="Version"
+                                      className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                    />
+                                    <input
+                                      value={editLinkDraft.frameUrl}
+                                      onChange={(event) =>
+                                        setEditLinkDraft((current) => ({
+                                          ...current,
+                                          frameUrl: event.target.value,
+                                        }))
+                                      }
+                                      placeholder="Frame.io link"
+                                      className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                    />
+                                    <textarea
+                                      value={editLinkDraft.customMessage}
+                                      onChange={(event) =>
+                                        setEditLinkDraft((current) => ({
+                                          ...current,
+                                          customMessage: event.target.value,
+                                        }))
+                                      }
+                                      placeholder="Notes"
+                                      className="h-16 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                    />
+                                    <input
+                                      type="text"
+                                      value={editLinkDraft.commentsDueAt}
+                                      onChange={(event) =>
+                                        setEditLinkDraft((current) => ({
+                                          ...current,
+                                          commentsDueAt: event.target.value,
+                                        }))
+                                      }
+                                      placeholder="Feedback due (optional)"
+                                      className="w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+                                    />
+                                    <div className="flex gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => void saveEditedLink(video, link.id)}
+                                        className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-semibold"
+                                      >
+                                        Save
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={cancelEditingLink}
+                                        className="rounded-md bg-slate-700 px-2 py-1 text-xs"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
                                   </div>
-                                ) : null}
-                              </>
-                            )}
+                                ) : (
+                                  <>
+                                    <div className="mb-1 flex gap-2">
+                                      {bundleIdx === 0 && linkIdx === 0 ? (
+                                        <span className="rounded-full bg-green-600 px-2 py-0.5 text-[10px] font-bold text-white">
+                                          NEWEST
+                                        </span>
+                                      ) : null}
+                                      {isRecentLink(link.postedAt) ? (
+                                        <span className="rounded-full bg-green-700 px-2 py-0.5 text-[10px] font-semibold text-white">
+                                          Posted {formatPosted(link.postedAt)}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <p className="text-xs font-semibold">{link.version}</p>
+                                    <p className="text-[11px] text-yellow-300">
+                                      Posted at: {formatPosted(link.postedAt)}
+                                    </p>
+                                    <a
+                                      href={link.frameUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-xs text-blue-300 underline"
+                                    >
+                                      Open Frame.io
+                                    </a>
+                                    <p className="mt-1 text-[11px] text-slate-400">
+                                      {link.customMessage || link.note}
+                                    </p>
+                                    <p className="text-[11px] text-red-300">
+                                      Feedback due: {formatDue(link.commentsDueAt)}
+                                    </p>
+                                    {isAdmin ? (
+                                      <div className="mt-2 flex gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => startEditingLink(link)}
+                                          className="rounded-md bg-blue-700 px-2 py-1 text-xs"
+                                        >
+                                          Edit
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => void deleteLink(video, link.id)}
+                                          className="rounded-md bg-red-700 px-2 py-1 text-xs"
+                                        >
+                                          Delete
+                                        </button>
+                                      </div>
+                                    ) : null}
+                                  </>
+                                )}
+                              </div>
+                            ))}
                           </div>
-                        ),
-                      )}
-                      {video.links.length > 1 ? (
+                        </div>
+                      ))}
+                      {spotBundles.length > 1 ? (
                         <button
                           type="button"
                           onClick={() =>
@@ -708,7 +704,7 @@ export function ApiCutdownsView({
                         >
                           {expandedHistoryByVideo[video.id]
                             ? "Hide link history"
-                            : `Link history (${video.links.length - 1} older)`}
+                            : `Link history (${spotBundles.length - 1} older postings)`}
                         </button>
                       ) : null}
                     </div>
@@ -718,52 +714,18 @@ export function ApiCutdownsView({
 
                   {isAdmin && openComposerVideoId === video.id ? (
                     <div className="mt-3 space-y-2 rounded-md border border-slate-800 p-2">
-                      <p className="text-xs font-semibold text-slate-300">Add review link</p>
-                      <input
-                        value={draft.frameUrl}
-                        onChange={(event) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [video.id]: { ...draft, frameUrl: event.target.value },
-                          }))
-                        }
-                        placeholder="Frame.io link"
-                        className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
+                      <p className="text-xs font-semibold text-slate-300">
+                        Add review link (single or multi-link posting)
+                      </p>
+                      <LinkComposerForm
+                        draftKey={video.id}
+                        draft={normalizeComposerDraft(drafts[video.id])}
+                        setDrafts={setDrafts}
+                        onSubmit={() => void postLink(video)}
+                        busy={busyVideoId === video.id}
+                        saved={savedVideoId === video.id}
+                        submitLabel="Save link"
                       />
-                      <textarea
-                        value={draft.customMessage}
-                        onChange={(event) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [video.id]: { ...draft, customMessage: event.target.value },
-                          }))
-                        }
-                        placeholder="Notes"
-                        className="h-16 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
-                      />
-                      <input
-                        type="text"
-                        value={draft.commentsDueAt}
-                        onChange={(event) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [video.id]: { ...draft, commentsDueAt: event.target.value },
-                          }))
-                        }
-                        placeholder="Feedback due (optional)"
-                        className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void postLink(video)}
-                        disabled={busyVideoId === video.id}
-                        className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-semibold disabled:opacity-70"
-                      >
-                        {busyVideoId === video.id ? "Saving…" : "Save link"}
-                      </button>
-                      {savedVideoId === video.id ? (
-                        <p className="text-xs font-semibold text-emerald-300">Saved.</p>
-                      ) : null}
                     </div>
                   ) : null}
                 </div>

@@ -18,6 +18,10 @@ export interface ReviewLinkVersion {
   commentsDueAt?: string;
   postedBy: string;
   postedAt: string;
+  /** Same id on all URLs saved together in one multi-link posting. */
+  bundleId?: string;
+  /** Order inside a bundle (0, 1, 2…). */
+  bundleOrder?: number;
 }
 
 export interface VideoItem {

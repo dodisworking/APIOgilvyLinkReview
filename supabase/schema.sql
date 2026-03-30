@@ -77,6 +77,9 @@ create table if not exists review_links (
   posted_at timestamptz not null default now()
 );
 
+alter table review_links add column if not exists bundle_id uuid;
+alter table review_links add column if not exists bundle_order int;
+
 create table if not exists contacts (
   id uuid primary key default gen_random_uuid(),
   name text not null,

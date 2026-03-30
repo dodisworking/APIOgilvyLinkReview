@@ -33,6 +33,8 @@ interface DbReviewLink {
   custom_message: string | null;
   posted_by_name: string;
   posted_at: string;
+  bundle_id: string | null;
+  bundle_order: number | null;
 }
 
 const fallbackRead = (): AppData => loadAppData();
@@ -178,6 +180,8 @@ export const fetchAppData = async (): Promise<AppData> => {
       commentsDueAt,
       postedBy: link.posted_by_name,
       postedAt: link.posted_at,
+      bundleId: link.bundle_id ?? undefined,
+      bundleOrder: link.bundle_order ?? undefined,
     });
     linkMap.set(link.video_id, current);
   });
@@ -212,6 +216,8 @@ export const saveReviewLink = async (params: {
   customMessage: string;
   commentsDueAt?: string;
   postedBy: string;
+  bundleId?: string;
+  bundleOrder?: number;
 }) => {
   if (!isSupabaseConfigured || !supabase) {
     return;
@@ -224,6 +230,8 @@ export const saveReviewLink = async (params: {
     notes: combineDueAndNotes(params.note, params.commentsDueAt),
     custom_message: params.customMessage,
     posted_by_name: params.postedBy,
+    bundle_id: params.bundleId ?? null,
+    bundle_order: params.bundleOrder ?? null,
   });
 };
 
@@ -234,19 +242,25 @@ export const updateReviewLinkRecord = async (params: {
   note: string;
   customMessage: string;
   commentsDueAt?: string;
+  bundleId?: string | null;
+  bundleOrder?: number | null;
 }) => {
   if (!isSupabaseConfigured || !supabase) {
     return;
   }
-  await supabase
-    .from("review_links")
-    .update({
-      version_label: params.version,
-      frameio_url: params.frameUrl,
-      notes: combineDueAndNotes(params.note, params.commentsDueAt),
-      custom_message: params.customMessage,
-    })
-    .eq("id", params.linkId);
+  const row: Record<string, unknown> = {
+    version_label: params.version,
+    frameio_url: params.frameUrl,
+    notes: combineDueAndNotes(params.note, params.commentsDueAt),
+    custom_message: params.customMessage,
+  };
+  if (params.bundleId !== undefined) {
+    row.bundle_id = params.bundleId;
+  }
+  if (params.bundleOrder !== undefined) {
+    row.bundle_order = params.bundleOrder;
+  }
+  await supabase.from("review_links").update(row).eq("id", params.linkId);
 };
 
 export const deleteReviewLinkRecord = async (linkId: string) => {
