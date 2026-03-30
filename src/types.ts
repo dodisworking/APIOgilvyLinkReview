@@ -60,10 +60,9 @@ export interface AppData {
 }
 
 /** API cutdown workspace: spots + optional batch-level Frame links (local storage). */
-export type CutdownBatchId = "1" | "2" | "3";
-
 export interface CutdownAppData {
   videos: VideoItem[];
   contacts: Contact[];
-  batchLinks: Record<CutdownBatchId, ReviewLinkVersion[]>;
+  /** Shared Frame drops; UI groups by local calendar day of `postedAt` (today / tomorrow / other). */
+  batchFrameLinks: ReviewLinkVersion[];
 }

@@ -1,9 +1,70 @@
-import type { CutdownAppData, CutdownBatchId, ReviewLinkVersion, VideoItem } from "@/types";
+import type { CutdownAppData, ReviewLinkVersion, VideoItem } from "@/types";
 
-export const CUTDOWN_BATCH_IDS: CutdownBatchId[] = ["1", "2", "3"];
+/** Draft key for the single shared batch Frame composer (see page.tsx). */
+export const BATCH_FRAME_DRAFT_KEY = "batch:frame";
 
-export function emptyBatchLinks(): Record<CutdownBatchId, ReviewLinkVersion[]> {
-  return { "1": [], "2": [], "3": [] };
+/** Local calendar YYYY-MM-DD in the user's timezone. */
+export function localYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+export function shortDayHeading(ymd: string): string {
+  const [y, mo, da] = ymd.split("-").map(Number);
+  if (!y || !mo || !da) {
+    return ymd;
+  }
+  const dt = new Date(y, mo - 1, da);
+  return dt.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+export interface BatchFramePartitions {
+  todayYmd: string;
+  tomorrowYmd: string;
+  today: ReviewLinkVersion[];
+  tomorrow: ReviewLinkVersion[];
+  /** Any posting not on today or tomorrow (yesterday, day after tomorrow, etc.). */
+  other: ReviewLinkVersion[];
+}
+
+const byPostedDesc = (a: ReviewLinkVersion, b: ReviewLinkVersion) =>
+  new Date(b.postedAt).getTime() - new Date(a.postedAt).getTime();
+
+/** Split shared batch links into today / tomorrow / other by local date of `postedAt`. */
+export function partitionBatchFrameLinksByPostingDay(
+  links: ReviewLinkVersion[],
+  now = new Date(),
+): BatchFramePartitions {
+  const todayYmd = localYmd(now);
+  const t2 = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const tomorrowYmd = localYmd(t2);
+
+  const today: ReviewLinkVersion[] = [];
+  const tomorrow: ReviewLinkVersion[] = [];
+  const other: ReviewLinkVersion[] = [];
+
+  for (const link of links) {
+    const ymd = localYmd(new Date(link.postedAt));
+    if (ymd === todayYmd) {
+      today.push(link);
+    } else if (ymd === tomorrowYmd) {
+      tomorrow.push(link);
+    } else {
+      other.push(link);
+    }
+  }
+
+  today.sort(byPostedDesc);
+  tomorrow.sort(byPostedDesc);
+  other.sort(byPostedDesc);
+
+  return { todayYmd, tomorrowYmd, today, tomorrow, other };
 }
 
 /** :15–:30 API cutdowns — stable ids map to Ogilvy batch (1–3). */
@@ -306,29 +367,30 @@ export function mergeStoredCutdownVideos(stored: VideoItem[]): VideoItem[] {
   });
 }
 
-function normalizeBatchLinks(
-  raw: unknown,
-): Record<CutdownBatchId, ReviewLinkVersion[]> {
-  const base = emptyBatchLinks();
-  if (!raw || typeof raw !== "object") {
-    return base;
+function normalizeBatchFrameLinks(parsed: unknown): ReviewLinkVersion[] {
+  if (!parsed || typeof parsed !== "object") {
+    return [];
   }
-  const o = raw as Record<string, ReviewLinkVersion[]>;
-  for (const id of CUTDOWN_BATCH_IDS) {
-    const arr = o[id];
-    base[id] = Array.isArray(arr) ? arr : [];
+  const o = parsed as Record<string, unknown>;
+  if (Array.isArray(o.batchFrameLinks)) {
+    return o.batchFrameLinks as ReviewLinkVersion[];
   }
-  return base;
+  const bl = o.batchLinks;
+  if (bl && typeof bl === "object") {
+    const r = bl as Record<string, ReviewLinkVersion[]>;
+    return [...(r["1"] ?? []), ...(r["2"] ?? []), ...(r["3"] ?? [])];
+  }
+  return [];
 }
 
 /** Merge localStorage JSON into a full cutdown workspace (spots + batch links). */
 export function mergeStoredCutdownData(parsed: Partial<CutdownAppData>): CutdownAppData {
   const videos = mergeStoredCutdownVideos(parsed.videos ?? []);
-  const batchLinks = normalizeBatchLinks(parsed.batchLinks);
+  const batchFrameLinks = normalizeBatchFrameLinks(parsed);
   return {
     videos,
     contacts: [],
-    batchLinks,
+    batchFrameLinks,
   };
 }
 
@@ -336,6 +398,6 @@ export function buildCutdownSeedData(): CutdownAppData {
   return {
     videos: buildCutdownSeedVideos(),
     contacts: [],
-    batchLinks: emptyBatchLinks(),
+    batchFrameLinks: [],
   };
 }

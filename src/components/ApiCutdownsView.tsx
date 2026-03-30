@@ -4,23 +4,23 @@ import type { Dispatch, SetStateAction } from "react";
 import { CutdownSchedulePanel } from "@/components/CutdownSchedulePanel";
 import { LinkComposerForm } from "@/components/LinkComposerForm";
 import {
-  API_CUTDOWN_BATCH_ROSTER,
-  CUTDOWN_BATCH_IDS,
+  BATCH_FRAME_DRAFT_KEY,
   getCutdownBatch,
   getCutdownScheduleStatus,
+  partitionBatchFrameLinksByPostingDay,
+  shortDayHeading,
 } from "@/lib/api-cutdowns";
 import { groupLinksIntoBundles, normalizeComposerDraft, type LinkComposerDraft } from "@/lib/link-bundles";
-import type { CutdownBatchId, ReviewLinkVersion, VideoItem } from "@/types";
+import type { ReviewLinkVersion, VideoItem } from "@/types";
 
 type CutdownPanel = "status" | "links" | "schedule" | null;
 
 interface ApiCutdownsViewProps {
   cutdownVideos: VideoItem[];
-  batchLinks: Record<CutdownBatchId, ReviewLinkVersion[]>;
-  cutdownBatchDraftKey: (batchId: CutdownBatchId) => string;
-  openCutdownBatchComposer: CutdownBatchId | null;
-  setOpenCutdownBatchComposer: Dispatch<SetStateAction<CutdownBatchId | null>>;
-  postCutdownBatchLink: (batchId: CutdownBatchId) => void | Promise<void>;
+  batchFrameLinks: ReviewLinkVersion[];
+  openBatchFrameComposer: boolean;
+  setOpenBatchFrameComposer: Dispatch<SetStateAction<boolean>>;
+  postCutdownBatchLink: () => void | Promise<void>;
   saveEditedCutdownLinkById: (linkId: string) => void | Promise<void>;
   deleteCutdownLinkById: (linkId: string) => void | Promise<void>;
   isAdmin: boolean;
@@ -66,10 +66,9 @@ interface ApiCutdownsViewProps {
 
 export function ApiCutdownsView({
   cutdownVideos,
-  batchLinks,
-  cutdownBatchDraftKey,
-  openCutdownBatchComposer,
-  setOpenCutdownBatchComposer,
+  batchFrameLinks,
+  openBatchFrameComposer,
+  setOpenBatchFrameComposer,
   postCutdownBatchLink,
   saveEditedCutdownLinkById,
   deleteCutdownLinkById,
@@ -99,6 +98,28 @@ export function ApiCutdownsView({
   formatPosted,
   isRecentLink,
 }: ApiCutdownsViewProps) {
+  const batchDayParts = partitionBatchFrameLinksByPostingDay(batchFrameLinks);
+  const batchDaySections = [
+    {
+      expandKey: "batch:today",
+      title: `Today — ${shortDayHeading(batchDayParts.todayYmd)}`,
+      subtitle: "Anything you post now is stamped today (local time) and shows here.",
+      links: batchDayParts.today,
+    },
+    {
+      expandKey: "batch:tomorrow",
+      title: `Tomorrow — ${shortDayHeading(batchDayParts.tomorrowYmd)}`,
+      subtitle: "Links posted on that calendar day land in this column.",
+      links: batchDayParts.tomorrow,
+    },
+    {
+      expandKey: "batch:other",
+      title: "Earlier and other days",
+      subtitle: "Yesterday, the day after tomorrow, and older shared drops.",
+      links: batchDayParts.other,
+    },
+  ];
+
   return (
     <>
       <header className="sticky top-0 z-10 rounded-xl bg-slate-900/95 p-3 backdrop-blur">
@@ -251,58 +272,74 @@ export function ApiCutdownsView({
         <div className="space-y-4 rounded-xl border border-emerald-800/40 bg-slate-900 p-3">
           <h2 className="text-base font-semibold text-emerald-200">Link tracker</h2>
           <p className="text-[11px] leading-relaxed text-slate-400">
-            <span className="text-cyan-200/90">Batch links</span> — one rolling list per Ogilvy batch
-            (shared Frame drops). <span className="text-emerald-200/90">Spot links</span> — per title
-            below.
+            <span className="text-cyan-200/90">Shared Frame drops</span> sort into{" "}
+            <span className="text-cyan-100">today</span>, <span className="text-cyan-100">tomorrow</span>,
+            and <span className="text-cyan-100">other days</span> using each link&apos;s posting date
+            (your local time). <span className="text-emerald-200/90">Spot links</span> are per title
+            below. Ogilvy editorial batch rosters stay on the Schedule tile.
           </p>
 
           <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-cyan-200/90">
-              Batch links
-            </h3>
-            <div className="mt-2 space-y-3">
-              {CUTDOWN_BATCH_IDS.map((batchId) => {
-                const dkey = cutdownBatchDraftKey(batchId);
-                const links = batchLinks[batchId] ?? [];
-                const linkBundles = groupLinksIntoBundles(links);
-                const expandKey = dkey;
+            <div className="mt-1 flex flex-wrap items-start justify-between gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-cyan-200/90">
+                Shared batch Frame drops
+              </h3>
+              {isAdmin ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenComposerVideoId(null);
+                    setOpenBatchFrameComposer((open) => !open);
+                  }}
+                  className="shrink-0 rounded-full bg-cyan-700 px-2 py-1 text-xs font-bold text-white"
+                  title="Add shared batch link"
+                >
+                  +
+                </button>
+              ) : null}
+            </div>
+
+            {isAdmin && openBatchFrameComposer ? (
+              <div className="mt-3 space-y-2 rounded-md border border-cyan-900/50 p-2">
+                <p className="text-xs font-semibold text-cyan-200">
+                  Add shared drop (single or multi-link) — appears under Today until the calendar day
+                  changes.
+                </p>
+                <LinkComposerForm
+                  draftKey={BATCH_FRAME_DRAFT_KEY}
+                  draft={normalizeComposerDraft(drafts[BATCH_FRAME_DRAFT_KEY])}
+                  setDrafts={setDrafts}
+                  onSubmit={() => void postCutdownBatchLink()}
+                  busy={busyVideoId === BATCH_FRAME_DRAFT_KEY}
+                  saved={savedVideoId === BATCH_FRAME_DRAFT_KEY}
+                  submitLabel="Save batch link"
+                  accentClass="bg-cyan-600"
+                />
+              </div>
+            ) : null}
+
+            <div className="mt-4 space-y-4">
+              {batchDaySections.map((section) => {
+                const linkBundles = groupLinksIntoBundles(section.links);
+                const expandKey = section.expandKey;
                 return (
                   <div
-                    key={`batch-links-${batchId}`}
+                    key={expandKey}
                     className="rounded-lg border border-cyan-900/40 bg-slate-950 p-3"
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="font-medium text-cyan-100">Batch {batchId}</p>
-                        <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
-                          {API_CUTDOWN_BATCH_ROSTER[batchId]}
-                        </p>
-                      </div>
-                      {isAdmin ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setOpenComposerVideoId(null);
-                            setOpenCutdownBatchComposer((c) =>
-                              c === batchId ? null : batchId,
-                            );
-                          }}
-                          className="shrink-0 rounded-full bg-cyan-700 px-2 py-1 text-xs font-bold text-white"
-                          title="Add batch link"
-                        >
-                          +
-                        </button>
-                      ) : null}
+                    <div className="min-w-0">
+                      <p className="font-medium text-cyan-100">{section.title}</p>
+                      <p className="mt-1 text-[10px] leading-relaxed text-slate-500">{section.subtitle}</p>
                     </div>
 
-                    {links.length > 0 ? (
+                    {section.links.length > 0 ? (
                       <div className="mt-3 space-y-2">
                         {(expandedHistoryByVideo[expandKey]
                           ? linkBundles
                           : linkBundles.slice(0, 1)
                         ).map((bundle, bundleIdx) => (
                           <div
-                            key={bundle[0]?.bundleId ?? bundle[0]?.id ?? `b-${bundleIdx}`}
+                            key={bundle[0]?.bundleId ?? bundle[0]?.id ?? `b-${expandKey}-${bundleIdx}`}
                             className="rounded-md border border-cyan-900/40 bg-slate-900 p-2"
                           >
                             {bundle.length > 1 ? (
@@ -453,32 +490,14 @@ export function ApiCutdownsView({
                             className="w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-left text-sm text-slate-200"
                           >
                             {expandedHistoryByVideo[expandKey]
-                              ? "Hide batch link history"
-                              : `Batch link history (${linkBundles.length - 1} older postings)`}
+                              ? "Hide history for this day"
+                              : `More postings (${linkBundles.length - 1} older)`}
                           </button>
                         ) : null}
                       </div>
                     ) : (
-                      <p className="mt-3 text-xs text-slate-500">No batch links yet.</p>
+                      <p className="mt-3 text-xs text-slate-500">No shared drops for this day yet.</p>
                     )}
-
-                    {isAdmin && openCutdownBatchComposer === batchId ? (
-                      <div className="mt-3 space-y-2 rounded-md border border-cyan-900/50 p-2">
-                        <p className="text-xs font-semibold text-cyan-200">
-                          Add batch link (single or multi-link posting)
-                        </p>
-                        <LinkComposerForm
-                          draftKey={dkey}
-                          draft={normalizeComposerDraft(drafts[dkey])}
-                          setDrafts={setDrafts}
-                          onSubmit={() => void postCutdownBatchLink(batchId)}
-                          busy={busyVideoId === dkey}
-                          saved={savedVideoId === dkey}
-                          submitLabel="Save batch link"
-                          accentClass="bg-cyan-600"
-                        />
-                      </div>
-                    ) : null}
                   </div>
                 );
               })}
@@ -531,7 +550,7 @@ export function ApiCutdownsView({
                         <button
                           type="button"
                           onClick={() => {
-                            setOpenCutdownBatchComposer(null);
+                            setOpenBatchFrameComposer(false);
                             setOpenComposerVideoId((current) =>
                               current === video.id ? null : video.id,
                             );

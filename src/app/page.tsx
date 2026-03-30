@@ -15,7 +15,7 @@ import {
 } from "@/lib/data-service";
 import { ApiCutdownsView } from "@/components/ApiCutdownsView";
 import { LinkComposerForm } from "@/components/LinkComposerForm";
-import { CUTDOWN_BATCH_IDS } from "@/lib/api-cutdowns";
+import { BATCH_FRAME_DRAFT_KEY } from "@/lib/api-cutdowns";
 import {
   emptyComposerDraft,
   getNextBatchPostingVersionLabel,
@@ -30,7 +30,6 @@ import {
   AppData,
   Contact,
   CutdownAppData,
-  CutdownBatchId,
   ManualTrackerStatus,
   VideoItem,
 } from "@/types";
@@ -196,8 +195,7 @@ export default function Home() {
   const [activePanel, setActivePanel] = useState<AppPanel>(null);
   const [hubMode, setHubMode] = useState<HubMode>("live");
   const [cutdownData, setCutdownData] = useState<CutdownAppData | null>(null);
-  const [openCutdownBatchComposer, setOpenCutdownBatchComposer] =
-    useState<CutdownBatchId | null>(null);
+  const [openBatchFrameComposer, setOpenBatchFrameComposer] = useState(false);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, ManualTrackerStatus>>(
     {},
   );
@@ -668,7 +666,6 @@ export default function Home() {
   };
   const isRecentLink = (postedAt: string) =>
     Date.now() - new Date(postedAt).getTime() <= 1000 * 60 * 60 * 24;
-  const cutdownBatchDraftKey = (batchId: CutdownBatchId) => `batch:${batchId}`;
   const togglePanel = (panel: Exclude<AppPanel, null>) => {
     if (activePanel === panel) {
       setActivePanel(null);
@@ -1128,13 +1125,13 @@ export default function Home() {
     setStatus("Link deleted.");
   };
 
-  const postCutdownBatchLink = async (batchId: CutdownBatchId) => {
+  const postCutdownBatchLink = async () => {
     if (!cutdownData) {
       return;
     }
-    const dkey = cutdownBatchDraftKey(batchId);
+    const dkey = BATCH_FRAME_DRAFT_KEY;
     const draft = normalizeComposerDraft(drafts[dkey]);
-    const existing = cutdownData.batchLinks[batchId] ?? [];
+    const existing = cutdownData.batchFrameLinks;
 
     const buildBatchMulti = (filled: { frameUrl: string; note: string }[]) => {
       const bundleId = crypto.randomUUID();
@@ -1168,18 +1165,15 @@ export default function Home() {
       const newLinks = buildBatchMulti(filled);
       const nextData: CutdownAppData = {
         ...cutdownData,
-        batchLinks: {
-          ...cutdownData.batchLinks,
-          [batchId]: [...newLinks, ...existing],
-        },
+        batchFrameLinks: [...newLinks, ...existing],
       };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
-      setStatus(`Posted ${newLinks.length} batch links for Batch ${batchId}.`);
+      setStatus(`Posted ${newLinks.length} shared batch link(s) (today's column).`);
       setSavedVideoId(dkey);
       setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
       setBusyVideoId("");
-      setOpenCutdownBatchComposer(null);
+      setOpenBatchFrameComposer(false);
       setTimeout(() => {
         setSavedVideoId((current) => (current === dkey ? null : current));
       }, 2000);
@@ -1209,18 +1203,15 @@ export default function Home() {
 
     const nextData: CutdownAppData = {
       ...cutdownData,
-      batchLinks: {
-        ...cutdownData.batchLinks,
-        [batchId]: [newLink, ...existing],
-      },
+      batchFrameLinks: [newLink, ...existing],
     };
     setCutdownData(nextData);
     saveCutdownAppData(nextData);
-    setStatus(`Posted ${autoVersion} for Batch ${batchId}.`);
+    setStatus(`Posted ${autoVersion} (today's column).`);
     setSavedVideoId(dkey);
     setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
     setBusyVideoId("");
-    setOpenCutdownBatchComposer(null);
+    setOpenBatchFrameComposer(false);
     setTimeout(() => {
       setSavedVideoId((current) => (current === dkey ? null : current));
     }, 2000);
@@ -1241,11 +1232,8 @@ export default function Home() {
       return;
     }
 
-    for (const bid of CUTDOWN_BATCH_IDS) {
-      if (!cutdownData.batchLinks[bid].some((l) => l.id === linkId)) {
-        continue;
-      }
-      const nextLinks = cutdownData.batchLinks[bid].map((link) =>
+    if (cutdownData.batchFrameLinks.some((l) => l.id === linkId)) {
+      const nextLinks = cutdownData.batchFrameLinks.map((link) =>
         link.id === linkId
           ? {
               ...link,
@@ -1259,7 +1247,7 @@ export default function Home() {
       );
       const nextData: CutdownAppData = {
         ...cutdownData,
-        batchLinks: { ...cutdownData.batchLinks, [bid]: nextLinks },
+        batchFrameLinks: nextLinks,
       };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
@@ -1279,14 +1267,11 @@ export default function Home() {
       return;
     }
 
-    for (const bid of CUTDOWN_BATCH_IDS) {
-      if (!cutdownData.batchLinks[bid].some((l) => l.id === linkId)) {
-        continue;
-      }
-      const nextLinks = cutdownData.batchLinks[bid].filter((l) => l.id !== linkId);
+    if (cutdownData.batchFrameLinks.some((l) => l.id === linkId)) {
+      const nextLinks = cutdownData.batchFrameLinks.filter((l) => l.id !== linkId);
       const nextData: CutdownAppData = {
         ...cutdownData,
-        batchLinks: { ...cutdownData.batchLinks, [bid]: nextLinks },
+        batchFrameLinks: nextLinks,
       };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
@@ -2093,10 +2078,9 @@ export default function Home() {
       ) : cutdownData ? (
         <ApiCutdownsView
           cutdownVideos={cutdownData.videos}
-          batchLinks={cutdownData.batchLinks}
-          cutdownBatchDraftKey={cutdownBatchDraftKey}
-          openCutdownBatchComposer={openCutdownBatchComposer}
-          setOpenCutdownBatchComposer={setOpenCutdownBatchComposer}
+          batchFrameLinks={cutdownData.batchFrameLinks}
+          openBatchFrameComposer={openBatchFrameComposer}
+          setOpenBatchFrameComposer={setOpenBatchFrameComposer}
           postCutdownBatchLink={postCutdownBatchLink}
           saveEditedCutdownLinkById={saveEditedCutdownLinkById}
           deleteCutdownLinkById={deleteCutdownLinkById}
