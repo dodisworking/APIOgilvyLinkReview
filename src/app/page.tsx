@@ -15,7 +15,7 @@ import {
 } from "@/lib/data-service";
 import { ApiCutdownsView } from "@/components/ApiCutdownsView";
 import { LinkComposerForm } from "@/components/LinkComposerForm";
-import { BATCH_FRAME_DRAFT_KEY } from "@/lib/api-cutdowns";
+import { BATCH_FRAME_DRAFT_KEY, mergeStoredCutdownData } from "@/lib/api-cutdowns";
 import {
   emptyComposerDraft,
   getNextBatchPostingVersionLabel,
@@ -24,6 +24,11 @@ import {
   normalizeComposerDraft,
   type LinkComposerDraft,
 } from "@/lib/link-bundles";
+import {
+  fetchCutdownRemotePayload,
+  isCutdownRemoteWriteConfigured,
+  pushCutdownRemote,
+} from "@/lib/cutdown-remote";
 import { loadCutdownAppData, saveCutdownAppData } from "@/lib/cutdown-storage";
 import { saveAppData } from "@/lib/storage";
 import {
@@ -234,14 +239,41 @@ export default function Home() {
     fetchAppData().then((appData) => setData(appData));
   }, []);
 
+  const cutdownSyncQuietUntil = useRef(0);
+
   useEffect(() => {
-    setCutdownData(loadCutdownAppData());
+    const local = loadCutdownAppData();
+    setCutdownData(local);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const remote = await fetchCutdownRemotePayload();
+        if (cancelled || !remote) {
+          return;
+        }
+        cutdownSyncQuietUntil.current = Date.now() + 2000;
+        setCutdownData(mergeStoredCutdownData(remote));
+      } catch {
+        /* keep local */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    if (cutdownData) {
-      saveCutdownAppData(cutdownData);
+    if (!cutdownData) {
+      return;
     }
+    saveCutdownAppData(cutdownData);
+    if (Date.now() < cutdownSyncQuietUntil.current) {
+      return;
+    }
+    const t = setTimeout(() => {
+      void pushCutdownRemote(cutdownData);
+    }, 600);
+    return () => clearTimeout(t);
   }, [cutdownData]);
 
   useEffect(() => {
@@ -2109,6 +2141,7 @@ export default function Home() {
           formatDue={formatDue}
           formatPosted={formatPosted}
           isRecentLink={isRecentLink}
+          cutdownRemoteWriteConfigured={isCutdownRemoteWriteConfigured()}
         />
       ) : (
         <p className="mt-3 text-sm text-slate-400">Loading API cutdown workspace…</p>

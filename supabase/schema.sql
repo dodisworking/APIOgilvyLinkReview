@@ -118,6 +118,16 @@ alter table contacts enable row level security;
 alter table notification_templates enable row level security;
 alter table notification_logs enable row level security;
 
+/** Single-row JSON workspace for API cutdown hub (synced via Next.js API + service role). */
+create table if not exists cutdown_workspace (
+  id text primary key default 'singleton',
+  payload jsonb not null default '{}',
+  updated_at timestamptz not null default now()
+);
+
+alter table cutdown_workspace enable row level security;
+/** No policies: anon cannot access; service role (API route) bypasses RLS. */
+
 create or replace function get_my_role()
 returns app_role
 language sql
