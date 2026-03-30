@@ -64,6 +64,8 @@ interface ApiCutdownsViewProps {
   isRecentLink: (postedAt: string) => boolean;
   /** When false, shared cutdown data is browser-only unless GET sync is configured server-side. */
   cutdownRemoteWriteConfigured: boolean;
+  onPushCutdownToServer: () => void | Promise<void>;
+  cutdownPushBusy: boolean;
 }
 
 export function ApiCutdownsView({
@@ -100,6 +102,8 @@ export function ApiCutdownsView({
   formatPosted,
   isRecentLink,
   cutdownRemoteWriteConfigured,
+  onPushCutdownToServer,
+  cutdownPushBusy,
 }: ApiCutdownsViewProps) {
   const batchDayParts = partitionBatchFrameLinksByPostingDay(batchFrameLinks);
   const batchDaySections = [
@@ -284,6 +288,21 @@ export function ApiCutdownsView({
               Vercel, then run the <code className="rounded bg-slate-900 px-1">cutdown_workspace</code>{" "}
               SQL from the repo schema.
             </p>
+          ) : null}
+          {isAdmin && cutdownRemoteWriteConfigured ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void onPushCutdownToServer()}
+                disabled={cutdownPushBusy}
+                className="rounded-md bg-cyan-700 px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-60"
+              >
+                {cutdownPushBusy ? "Uploading…" : "Save this browser's cutdowns to server"}
+              </button>
+              <span className="text-[10px] text-slate-500">
+                Use once to copy localhost links into Supabase without re-entering them.
+              </span>
+            </div>
           ) : null}
           <p className="text-[11px] leading-relaxed text-slate-400">
             <span className="text-cyan-200/90">Shared Frame drops</span> sort into{" "}

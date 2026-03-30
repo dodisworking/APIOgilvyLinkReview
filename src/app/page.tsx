@@ -15,7 +15,7 @@ import {
 } from "@/lib/data-service";
 import { ApiCutdownsView } from "@/components/ApiCutdownsView";
 import { LinkComposerForm } from "@/components/LinkComposerForm";
-import { BATCH_FRAME_DRAFT_KEY, mergeStoredCutdownData } from "@/lib/api-cutdowns";
+import { BATCH_FRAME_DRAFT_KEY } from "@/lib/api-cutdowns";
 import {
   emptyComposerDraft,
   getNextBatchPostingVersionLabel,
@@ -201,6 +201,7 @@ export default function Home() {
   const [hubMode, setHubMode] = useState<HubMode>("live");
   const [cutdownData, setCutdownData] = useState<CutdownAppData | null>(null);
   const [openBatchFrameComposer, setOpenBatchFrameComposer] = useState(false);
+  const [cutdownPushBusy, setCutdownPushBusy] = useState(false);
   const [statusOverrides, setStatusOverrides] = useState<Record<string, ManualTrackerStatus>>(
     {},
   );
@@ -252,7 +253,7 @@ export default function Home() {
           return;
         }
         cutdownSyncQuietUntil.current = Date.now() + 2000;
-        setCutdownData(mergeStoredCutdownData(remote));
+        setCutdownData(remote);
       } catch {
         /* keep local */
       }
@@ -1315,6 +1316,21 @@ export default function Home() {
     }
   };
 
+  const syncCutdownToServerNow = async () => {
+    if (!cutdownData) {
+      return;
+    }
+    setCutdownPushBusy(true);
+    setStatus("");
+    const ok = await pushCutdownRemote(cutdownData);
+    setCutdownPushBusy(false);
+    setStatus(
+      ok
+        ? "Cutdown workspace uploaded to server. Refresh on another device to load it."
+        : "Upload failed. Add SUPABASE_SERVICE_ROLE_KEY and matching sync secrets (.env.local on dev, Vercel on prod), then restart / redeploy.",
+    );
+  };
+
   const addContact = () => {
     if (!data) {
       return;
@@ -2142,6 +2158,8 @@ export default function Home() {
           formatPosted={formatPosted}
           isRecentLink={isRecentLink}
           cutdownRemoteWriteConfigured={isCutdownRemoteWriteConfigured()}
+          onPushCutdownToServer={syncCutdownToServerNow}
+          cutdownPushBusy={cutdownPushBusy}
         />
       ) : (
         <p className="mt-3 text-sm text-slate-400">Loading API cutdown workspace…</p>

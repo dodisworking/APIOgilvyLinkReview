@@ -1,3 +1,4 @@
+import { cutdownHasUserContent, mergeStoredCutdownData } from "@/lib/api-cutdowns";
 import type { CutdownAppData } from "@/types";
 
 /** True when the browser can attempt remote sync (shared secret present at build time). */
@@ -11,11 +12,15 @@ export async function fetchCutdownRemotePayload(): Promise<CutdownAppData | null
     if (!res.ok) {
       return null;
     }
-    const json = (await res.json()) as { payload?: CutdownAppData | null };
-    if (!json.payload) {
+    const json = (await res.json()) as { payload?: unknown };
+    if (!json.payload || typeof json.payload !== "object") {
       return null;
     }
-    return json.payload;
+    const merged = mergeStoredCutdownData(json.payload as Partial<CutdownAppData>);
+    if (!cutdownHasUserContent(merged)) {
+      return null;
+    }
+    return merged;
   } catch {
     return null;
   }

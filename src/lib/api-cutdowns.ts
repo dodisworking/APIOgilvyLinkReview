@@ -383,6 +383,20 @@ function normalizeBatchFrameLinks(parsed: unknown): ReviewLinkVersion[] {
   return [];
 }
 
+/** True if this browser/workspace has anything worth keeping or uploading (links or approvals). */
+export function cutdownHasUserContent(data: CutdownAppData): boolean {
+  if (data.batchFrameLinks.length > 0) {
+    return true;
+  }
+  if (data.videos.some((v) => v.links.length > 0)) {
+    return true;
+  }
+  if (data.videos.some((v) => v.isApproved)) {
+    return true;
+  }
+  return false;
+}
+
 /** Merge localStorage JSON into a full cutdown workspace (spots + batch links). */
 export function mergeStoredCutdownData(parsed: Partial<CutdownAppData>): CutdownAppData {
   const videos = mergeStoredCutdownVideos(parsed.videos ?? []);
