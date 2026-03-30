@@ -36,7 +36,7 @@ import {
   type CutdownPushResult,
 } from "@/lib/cutdown-remote";
 import { loadCutdownAppData, saveCutdownAppData } from "@/lib/cutdown-storage";
-import { isSupabaseConfigured } from "@/lib/supabase";
+import { hasReviewLinkCloudPath } from "@/lib/supabase";
 import { saveAppData } from "@/lib/storage";
 import {
   AppData,
@@ -284,7 +284,7 @@ export default function Home() {
       const local = loadCutdownAppData();
       let merged = local;
       try {
-        if (isSupabaseConfigured) {
+        if (hasReviewLinkCloudPath()) {
           const fromLinks = await fetchCutdownAppDataFromSupabase();
           if (!cancelled && fromLinks) {
             merged = mergeCutdownRemoteAndLocal(merged, fromLinks);
@@ -312,7 +312,7 @@ export default function Home() {
       return;
     }
     saveCutdownAppData(cutdownData);
-    if (isSupabaseConfigured) {
+    if (hasReviewLinkCloudPath()) {
       return;
     }
     if (Date.now() < cutdownSyncQuietUntil.current) {
@@ -356,8 +356,8 @@ export default function Home() {
       title: "Not saved to Supabase",
       body:
         via === "review_links"
-          ? `${r.detail}\n\nThis path uses the same rules as live hub links: sign in with a profile role of editor or admin if RLS is enabled.`
-          : `${r.detail}\n\nWorkspace path: set NEXT_PUBLIC_CUTDOWN_SYNC_SECRET and server CUTDOWN_SYNC_SECRET, or use Supabase (review_links) with URL + anon key and sign-in.`,
+          ? `${r.detail}\n\nIf this persists: in Vercel add NEXT_PUBLIC_CUTDOWN_SYNC_SECRET (same as CUTDOWN_SYNC_SECRET), SUPABASE_SERVICE_ROLE_KEY, and Supabase project URL — or use URL + anon key and sign in as editor/admin.`
+          : `${r.detail}\n\nLegacy workspace: set NEXT_PUBLIC_CUTDOWN_SYNC_SECRET + CUTDOWN_SYNC_SECRET on Vercel, or add NEXT_PUBLIC_SUPABASE_URL + ANON_KEY to use review_links instead.`,
     });
   };
 
@@ -769,7 +769,7 @@ export default function Home() {
     setCutdownData(nextData);
     saveCutdownAppData(nextData);
     void (async () => {
-      if (isSupabaseConfigured) {
+      if (hasReviewLinkCloudPath()) {
         try {
           await updateVideoWorkflowState({
             videoId,
@@ -806,7 +806,7 @@ export default function Home() {
     setCutdownData(nextData);
     saveCutdownAppData(nextData);
     void (async () => {
-      if (isSupabaseConfigured) {
+      if (hasReviewLinkCloudPath()) {
         try {
           await updateVideoWorkflowState({ videoId, isApproved: nextApproved });
         } catch {
@@ -929,7 +929,7 @@ export default function Home() {
         setCutdownData(nextData);
         saveCutdownAppData(nextData);
         try {
-          if (isSupabaseConfigured) {
+          if (hasReviewLinkCloudPath()) {
             for (const nl of newLinks) {
               await saveReviewLink({
                 linkId: nl.id,
@@ -957,7 +957,7 @@ export default function Home() {
           setCutdownData(prevData);
           saveCutdownAppData(prevData);
           const message = error instanceof Error ? error.message : "Unable to save link.";
-          if (isSupabaseConfigured) {
+          if (hasReviewLinkCloudPath()) {
             showCutdownSaveFeedback({ ok: false, detail: message, via: "review_links" });
           } else {
             showCutdownSaveFeedback({ ok: false, detail: message, via: "workspace" });
@@ -1007,7 +1007,7 @@ export default function Home() {
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
       try {
-        if (isSupabaseConfigured) {
+        if (hasReviewLinkCloudPath()) {
           await saveReviewLink({
             linkId: newLink.id,
             videoId: video.id,
@@ -1034,7 +1034,7 @@ export default function Home() {
         showCutdownSaveFeedback({
           ok: false,
           detail: message,
-          via: isSupabaseConfigured ? "review_links" : "workspace",
+          via: hasReviewLinkCloudPath() ? "review_links" : "workspace",
         });
       } finally {
         setBusyVideoId("");
@@ -1069,7 +1069,7 @@ export default function Home() {
       saveAppData(nextData);
 
       try {
-        if (isSupabaseConfigured) {
+        if (hasReviewLinkCloudPath()) {
           for (let i = 0; i < newLinks.length; i += 1) {
             const nl = newLinks[i];
             await saveReviewLink({
@@ -1087,7 +1087,7 @@ export default function Home() {
           showLinkSaveToast("Saved to Supabase", "cloud");
         } else {
           showLinkSaveToast(
-            "Saved in this browser only — add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to .env.local to write the cloud database.",
+            "Saved in this browser only — add Supabase URL + anon key, or NEXT_PUBLIC_CUTDOWN_SYNC_SECRET (same as server) for cloud saves.",
             "local",
           );
         }
@@ -1156,7 +1156,7 @@ export default function Home() {
     saveAppData(nextData);
 
     try {
-      if (isSupabaseConfigured) {
+      if (hasReviewLinkCloudPath()) {
         await saveReviewLink({
           videoId: video.id,
           version: autoVersion,
@@ -1169,7 +1169,7 @@ export default function Home() {
         showLinkSaveToast("Saved to Supabase", "cloud");
       } else {
         showLinkSaveToast(
-          "Saved in this browser only — add Supabase URL + anon key in .env.local for cloud.",
+          "Saved in this browser only — add Supabase URL + anon key, or NEXT_PUBLIC_CUTDOWN_SYNC_SECRET for server-side saves.",
           "local",
         );
       }
@@ -1260,7 +1260,7 @@ export default function Home() {
       saveCutdownAppData(nextData);
       const existingLink = video.links.find((l) => l.id === linkId);
       try {
-        if (isSupabaseConfigured) {
+        if (hasReviewLinkCloudPath()) {
           await updateReviewLinkRecord({
             linkId,
             version: editLinkDraft.version.trim(),
@@ -1324,7 +1324,7 @@ export default function Home() {
 
     const existingLink = video.links.find((l) => l.id === linkId);
     try {
-      if (isSupabaseConfigured) {
+      if (hasReviewLinkCloudPath()) {
         await updateReviewLinkRecord({
           linkId,
           version: editLinkDraft.version.trim(),
@@ -1338,7 +1338,7 @@ export default function Home() {
         showLinkSaveToast("Saved to Supabase", "cloud");
       } else {
         showLinkSaveToast(
-          "Saved in this browser only — add Supabase env in .env.local for cloud.",
+          "Saved in this browser only — add Supabase env or NEXT_PUBLIC_CUTDOWN_SYNC_SECRET for cloud.",
           "local",
         );
       }
@@ -1374,7 +1374,7 @@ export default function Home() {
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
       try {
-        if (isSupabaseConfigured) {
+        if (hasReviewLinkCloudPath()) {
           await deleteReviewLinkRecord(linkId);
         } else if (isCutdownRemoteWriteConfigured()) {
           const r = await pushCutdownShareToServer(nextData);
@@ -1414,7 +1414,7 @@ export default function Home() {
     setData(nextDataLive);
     saveAppData(nextDataLive);
     try {
-      if (isSupabaseConfigured) {
+      if (hasReviewLinkCloudPath()) {
         await deleteReviewLinkRecord(linkId);
       }
     } catch (error) {
@@ -1477,7 +1477,7 @@ export default function Home() {
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
       try {
-        if (isSupabaseConfigured) {
+        if (hasReviewLinkCloudPath()) {
           for (const nl of newLinks) {
             await saveReviewLink({
               linkId: nl.id,
@@ -1509,7 +1509,7 @@ export default function Home() {
         showCutdownSaveFeedback({
           ok: false,
           detail: message,
-          via: isSupabaseConfigured ? "review_links" : "workspace",
+          via: hasReviewLinkCloudPath() ? "review_links" : "workspace",
         });
       } finally {
         setBusyVideoId("");
@@ -1549,7 +1549,7 @@ export default function Home() {
     setCutdownData(nextData);
     saveCutdownAppData(nextData);
     try {
-      if (isSupabaseConfigured) {
+      if (hasReviewLinkCloudPath()) {
         await saveReviewLink({
           linkId: newLink.id,
           videoId: API_CUTDOWN_BATCH_VIDEO_ID,
@@ -1577,7 +1577,7 @@ export default function Home() {
       showCutdownSaveFeedback({
         ok: false,
         detail: message,
-        via: isSupabaseConfigured ? "review_links" : "workspace",
+        via: hasReviewLinkCloudPath() ? "review_links" : "workspace",
       });
     } finally {
       setBusyVideoId("");
@@ -1624,7 +1624,7 @@ export default function Home() {
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
       try {
-        if (isSupabaseConfigured) {
+        if (hasReviewLinkCloudPath()) {
           await updateReviewLinkRecord({
             linkId,
             version: editLinkDraft.version.trim(),
@@ -1673,7 +1673,7 @@ export default function Home() {
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
       try {
-        if (isSupabaseConfigured) {
+        if (hasReviewLinkCloudPath()) {
           await deleteReviewLinkRecord(linkId);
         } else if (isCutdownRemoteWriteConfigured()) {
           const r = await pushCutdownShareToServer(nextData);
