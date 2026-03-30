@@ -26,10 +26,15 @@ export async function fetchCutdownRemotePayload(): Promise<CutdownAppData | null
   }
 }
 
-export async function pushCutdownRemote(payload: CutdownAppData): Promise<boolean> {
+export type CutdownPushResult = { ok: true } | { ok: false; detail: string };
+
+export async function pushCutdownRemote(payload: CutdownAppData): Promise<CutdownPushResult> {
   const secret = process.env.NEXT_PUBLIC_CUTDOWN_SYNC_SECRET?.trim();
   if (!secret) {
-    return false;
+    return {
+      ok: false,
+      detail: "Set NEXT_PUBLIC_CUTDOWN_SYNC_SECRET (same as CUTDOWN_SYNC_SECRET on the server).",
+    };
   }
   try {
     const res = await fetch("/api/cutdown-data", {
@@ -40,8 +45,23 @@ export async function pushCutdownRemote(payload: CutdownAppData): Promise<boolea
       },
       body: JSON.stringify({ payload }),
     });
-    return res.ok;
-  } catch {
-    return false;
+    if (res.ok) {
+      return { ok: true };
+    }
+    let detail = `Server returned ${res.status}`;
+    try {
+      const j = (await res.json()) as { error?: string };
+      if (j?.error) {
+        detail = j.error;
+      }
+    } catch {
+      /* ignore */
+    }
+    return { ok: false, detail };
+  } catch (e) {
+    return {
+      ok: false,
+      detail: e instanceof Error ? e.message : "Network error",
+    };
   }
 }

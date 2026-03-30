@@ -397,6 +397,65 @@ export function cutdownHasUserContent(data: CutdownAppData): boolean {
   return false;
 }
 
+/**
+ * Union spot + batch links from local and remote so a slow GET cannot wipe links
+ * that exist only in this browser (or only on the server).
+ */
+export function mergeCutdownRemoteAndLocal(
+  local: CutdownAppData,
+  remote: CutdownAppData,
+): CutdownAppData {
+  const localById = new Map(local.videos.map((v) => [v.id, v]));
+  const remoteById = new Map(remote.videos.map((v) => [v.id, v]));
+
+  const mergedVideos: VideoItem[] = API_CUTDOWN_DEFS.map((def) => {
+    const lv = localById.get(def.id);
+    const rv = remoteById.get(def.id);
+    const base =
+      lv ??
+      rv ?? {
+        id: def.id,
+        title: def.title,
+        emoji: def.emoji,
+        day: "—",
+        time: "—",
+        scheduleType: "record" as const,
+        note: "API cutdown",
+        links: [],
+        isApproved: false,
+      };
+    const linkMap = new Map<string, ReviewLinkVersion>();
+    for (const l of rv?.links ?? []) {
+      linkMap.set(l.id, l);
+    }
+    for (const l of lv?.links ?? []) {
+      linkMap.set(l.id, l);
+    }
+    const mergedLinks = [...linkMap.values()].sort(byPostedDesc);
+    return {
+      ...base,
+      title: def.title,
+      emoji: def.emoji,
+      links: mergedLinks,
+      isApproved: Boolean(lv?.isApproved || rv?.isApproved),
+    };
+  });
+
+  const batchMap = new Map<string, ReviewLinkVersion>();
+  for (const l of remote.batchFrameLinks) {
+    batchMap.set(l.id, l);
+  }
+  for (const l of local.batchFrameLinks) {
+    batchMap.set(l.id, l);
+  }
+  const mergedBatch = [...batchMap.values()].sort(byPostedDesc);
+
+  return mergeStoredCutdownData({
+    videos: mergedVideos,
+    batchFrameLinks: mergedBatch,
+  });
+}
+
 /** Merge localStorage JSON into a full cutdown workspace (spots + batch links). */
 export function mergeStoredCutdownData(parsed: Partial<CutdownAppData>): CutdownAppData {
   const videos = mergeStoredCutdownVideos(parsed.videos ?? []);

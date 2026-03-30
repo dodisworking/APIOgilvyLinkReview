@@ -15,7 +15,7 @@ import {
 } from "@/lib/data-service";
 import { ApiCutdownsView } from "@/components/ApiCutdownsView";
 import { LinkComposerForm } from "@/components/LinkComposerForm";
-import { BATCH_FRAME_DRAFT_KEY } from "@/lib/api-cutdowns";
+import { BATCH_FRAME_DRAFT_KEY, mergeCutdownRemoteAndLocal } from "@/lib/api-cutdowns";
 import {
   emptyComposerDraft,
   getNextBatchPostingVersionLabel,
@@ -253,7 +253,12 @@ export default function Home() {
           return;
         }
         cutdownSyncQuietUntil.current = Date.now() + 2000;
-        setCutdownData(remote);
+        setCutdownData((current) => {
+          if (!current) {
+            return remote;
+          }
+          return mergeCutdownRemoteAndLocal(current, remote);
+        });
       } catch {
         /* keep local */
       }
@@ -272,10 +277,21 @@ export default function Home() {
       return;
     }
     const t = setTimeout(() => {
-      void pushCutdownRemote(cutdownData);
+      void pushCutdownRemote(cutdownData).then((r) => {
+        if (!r.ok) {
+          setStatus((prev) => prev || `Cutdown sync: ${r.detail}`);
+        }
+      });
     }, 600);
     return () => clearTimeout(t);
   }, [cutdownData]);
+
+  const pushCutdownShareToServer = async (payload: CutdownAppData) => {
+    const r = await pushCutdownRemote(payload);
+    if (!r.ok) {
+      setStatus(`Cutdown sync: ${r.detail}`);
+    }
+  };
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -674,14 +690,16 @@ export default function Home() {
       return;
     }
     const approved = value === "approved";
-    setCutdownData({
+    const nextData: CutdownAppData = {
       ...cutdownData,
       videos: cutdownData.videos.map((video) =>
         video.id === videoId
           ? { ...video, isApproved: approved, manualStatus: undefined }
           : video,
       ),
-    });
+    };
+    setCutdownData(nextData);
+    void pushCutdownShareToServer(nextData);
   };
 
   const toggleCutdownApproved = (videoId: string) => {
@@ -690,12 +708,14 @@ export default function Home() {
     }
     const current =
       cutdownData.videos.find((video) => video.id === videoId)?.isApproved ?? false;
-    setCutdownData({
+    const nextData: CutdownAppData = {
       ...cutdownData,
       videos: cutdownData.videos.map((video) =>
         video.id === videoId ? { ...video, isApproved: !current } : video,
       ),
-    });
+    };
+    setCutdownData(nextData);
+    void pushCutdownShareToServer(nextData);
   };
   const isRecentLink = (postedAt: string) =>
     Date.now() - new Date(postedAt).getTime() <= 1000 * 60 * 60 * 24;
@@ -802,6 +822,7 @@ export default function Home() {
         const nextData = { ...cutdownData, videos: updatedVideos };
         setCutdownData(nextData);
         saveCutdownAppData(nextData);
+        void pushCutdownShareToServer(nextData);
         setStatus(`Posted ${newLinks.length} links for ${video.title}.`);
         setSavedVideoId(video.id);
         setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
@@ -846,6 +867,7 @@ export default function Home() {
       const nextData = { ...cutdownData, videos: updatedVideos };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
+      void pushCutdownShareToServer(nextData);
       setStatus(`Posted ${autoVersion} for ${video.title}.`);
       setSavedVideoId(video.id);
       setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
@@ -1052,6 +1074,7 @@ export default function Home() {
       const nextData = { ...cutdownData, videos: nextVideos };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
+      void pushCutdownShareToServer(nextData);
       setStatus("Link updated.");
       cancelEditingLink();
       return;
@@ -1125,6 +1148,7 @@ export default function Home() {
       const nextData = { ...cutdownData, videos: nextVideos };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
+      void pushCutdownShareToServer(nextData);
 
       if (editingLinkId === linkId) {
         cancelEditingLink();
@@ -1137,7 +1161,7 @@ export default function Home() {
       return;
     }
 
-    const nextVideos = data.videos.map((item) => {
+    const nextVideosLive = data.videos.map((item) => {
       if (item.id !== video.id) {
         return item;
       }
@@ -1147,9 +1171,9 @@ export default function Home() {
       };
     });
 
-    const nextData = { ...data, videos: nextVideos };
-    setData(nextData);
-    saveAppData(nextData);
+    const nextDataLive = { ...data, videos: nextVideosLive };
+    setData(nextDataLive);
+    saveAppData(nextDataLive);
     await deleteReviewLinkRecord(linkId);
 
     if (editingLinkId === linkId) {
@@ -1202,6 +1226,7 @@ export default function Home() {
       };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
+      void pushCutdownShareToServer(nextData);
       setStatus(`Posted ${newLinks.length} shared batch link(s) (today's column).`);
       setSavedVideoId(dkey);
       setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
@@ -1240,6 +1265,7 @@ export default function Home() {
     };
     setCutdownData(nextData);
     saveCutdownAppData(nextData);
+    void pushCutdownShareToServer(nextData);
     setStatus(`Posted ${autoVersion} (today's column).`);
     setSavedVideoId(dkey);
     setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
@@ -1284,6 +1310,7 @@ export default function Home() {
       };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
+      void pushCutdownShareToServer(nextData);
       setStatus("Link updated.");
       cancelEditingLink();
       return;
@@ -1308,6 +1335,7 @@ export default function Home() {
       };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
+      void pushCutdownShareToServer(nextData);
       if (editingLinkId === linkId) {
         cancelEditingLink();
       }
@@ -1322,12 +1350,12 @@ export default function Home() {
     }
     setCutdownPushBusy(true);
     setStatus("");
-    const ok = await pushCutdownRemote(cutdownData);
+    const r = await pushCutdownRemote(cutdownData);
     setCutdownPushBusy(false);
     setStatus(
-      ok
+      r.ok
         ? "Cutdown workspace uploaded to server. Refresh on another device to load it."
-        : "Upload failed. Add SUPABASE_SERVICE_ROLE_KEY and matching sync secrets (.env.local on dev, Vercel on prod), then restart / redeploy.",
+        : `Upload failed: ${r.detail}`,
     );
   };
 
