@@ -28,6 +28,7 @@ import {
   fetchCutdownRemotePayload,
   isCutdownRemoteWriteConfigured,
   pushCutdownRemote,
+  type CutdownPushResult,
 } from "@/lib/cutdown-remote";
 import { loadCutdownAppData, saveCutdownAppData } from "@/lib/cutdown-storage";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -203,6 +204,11 @@ export default function Home() {
   const [cutdownData, setCutdownData] = useState<CutdownAppData | null>(null);
   const [openBatchFrameComposer, setOpenBatchFrameComposer] = useState(false);
   const [cutdownPushBusy, setCutdownPushBusy] = useState(false);
+  const [cutdownSyncDialog, setCutdownSyncDialog] = useState<null | {
+    ok: boolean;
+    title: string;
+    body: string;
+  }>(null);
   const [linkSaveToast, setLinkSaveToast] = useState<{
     message: string;
     tone: "cloud" | "local";
@@ -311,11 +317,24 @@ export default function Home() {
     return () => clearTimeout(t);
   }, [cutdownData]);
 
-  const pushCutdownShareToServer = async (payload: CutdownAppData) => {
-    const r = await pushCutdownRemote(payload);
-    if (!r.ok) {
-      setStatus(`Cutdown sync: ${r.detail}`);
+  const pushCutdownShareToServer = async (
+    payload: CutdownAppData,
+  ): Promise<CutdownPushResult> => pushCutdownRemote(payload);
+
+  const showCutdownCloudSaveDialog = (r: CutdownPushResult) => {
+    if (r.ok) {
+      setCutdownSyncDialog({
+        ok: true,
+        title: "Saved to Supabase",
+        body: "Your API cutdown link was written to the shared workspace in Supabase (cutdown_workspace). It is also kept in this browser.",
+      });
+      return;
     }
+    setCutdownSyncDialog({
+      ok: false,
+      title: "Not saved to Supabase",
+      body: `${r.detail}\n\nWhy this happens: the app posts to /api/cutdown-data using NEXT_PUBLIC_CUTDOWN_SYNC_SECRET; the server must accept it and write to Supabase. Your link is still saved locally in this browser until sync works.`,
+    });
   };
 
   useEffect(() => {
@@ -847,14 +866,18 @@ export default function Home() {
         const nextData = { ...cutdownData, videos: updatedVideos };
         setCutdownData(nextData);
         saveCutdownAppData(nextData);
-        void pushCutdownShareToServer(nextData);
-        setStatus(`Posted ${newLinks.length} links for ${video.title}.`);
-        setSavedVideoId(video.id);
-        setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
-        setBusyVideoId("");
-        setTimeout(() => {
-          setSavedVideoId((current) => (current === video.id ? null : current));
-        }, 2000);
+        try {
+          const r = await pushCutdownShareToServer(nextData);
+          showCutdownCloudSaveDialog(r);
+          setStatus(`Posted ${newLinks.length} links for ${video.title}.`);
+          setSavedVideoId(video.id);
+          setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
+        } finally {
+          setBusyVideoId("");
+          setTimeout(() => {
+            setSavedVideoId((current) => (current === video.id ? null : current));
+          }, 2000);
+        }
         return;
       }
 
@@ -892,14 +915,18 @@ export default function Home() {
       const nextData = { ...cutdownData, videos: updatedVideos };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
-      void pushCutdownShareToServer(nextData);
-      setStatus(`Posted ${autoVersion} for ${video.title}.`);
-      setSavedVideoId(video.id);
-      setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
-      setBusyVideoId("");
-      setTimeout(() => {
-        setSavedVideoId((current) => (current === video.id ? null : current));
-      }, 2000);
+      try {
+        const r = await pushCutdownShareToServer(nextData);
+        showCutdownCloudSaveDialog(r);
+        setStatus(`Posted ${autoVersion} for ${video.title}.`);
+        setSavedVideoId(video.id);
+        setDrafts((c) => ({ ...c, [video.id]: emptyComposerDraft() }));
+      } finally {
+        setBusyVideoId("");
+        setTimeout(() => {
+          setSavedVideoId((current) => (current === video.id ? null : current));
+        }, 2000);
+      }
       return;
     }
 
@@ -1294,15 +1321,19 @@ export default function Home() {
       };
       setCutdownData(nextData);
       saveCutdownAppData(nextData);
-      void pushCutdownShareToServer(nextData);
-      setStatus(`Posted ${newLinks.length} shared batch link(s) (today's column).`);
-      setSavedVideoId(dkey);
-      setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
-      setBusyVideoId("");
-      setOpenBatchFrameComposer(false);
-      setTimeout(() => {
-        setSavedVideoId((current) => (current === dkey ? null : current));
-      }, 2000);
+      try {
+        const r = await pushCutdownShareToServer(nextData);
+        showCutdownCloudSaveDialog(r);
+        setStatus(`Posted ${newLinks.length} shared batch link(s) (today's column).`);
+        setSavedVideoId(dkey);
+        setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
+        setOpenBatchFrameComposer(false);
+      } finally {
+        setBusyVideoId("");
+        setTimeout(() => {
+          setSavedVideoId((current) => (current === dkey ? null : current));
+        }, 2000);
+      }
       return;
     }
 
@@ -1333,15 +1364,19 @@ export default function Home() {
     };
     setCutdownData(nextData);
     saveCutdownAppData(nextData);
-    void pushCutdownShareToServer(nextData);
-    setStatus(`Posted ${autoVersion} (today's column).`);
-    setSavedVideoId(dkey);
-    setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
-    setBusyVideoId("");
-    setOpenBatchFrameComposer(false);
-    setTimeout(() => {
-      setSavedVideoId((current) => (current === dkey ? null : current));
-    }, 2000);
+    try {
+      const r = await pushCutdownShareToServer(nextData);
+      showCutdownCloudSaveDialog(r);
+      setStatus(`Posted ${autoVersion} (today's column).`);
+      setSavedVideoId(dkey);
+      setDrafts((c) => ({ ...c, [dkey]: emptyComposerDraft() }));
+      setOpenBatchFrameComposer(false);
+    } finally {
+      setBusyVideoId("");
+      setTimeout(() => {
+        setSavedVideoId((current) => (current === dkey ? null : current));
+      }, 2000);
+    }
   };
 
   const saveEditedCutdownLinkById = async (linkId: string) => {
@@ -1686,6 +1721,50 @@ export default function Home() {
           role="status"
         >
           {linkSaveToast.message}
+        </div>
+      ) : null}
+      {cutdownSyncDialog ? (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/80 px-4"
+          onClick={() => setCutdownSyncDialog(null)}
+          role="presentation"
+        >
+          <div
+            className={`w-full max-w-sm rounded-xl border p-4 shadow-xl ${
+              cutdownSyncDialog.ok
+                ? "border-emerald-500/50 bg-emerald-950/95"
+                : "border-red-500/50 bg-red-950/95"
+            }`}
+            onClick={(event) => event.stopPropagation()}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="cutdown-sync-dialog-title"
+            aria-describedby="cutdown-sync-dialog-body"
+          >
+            <h2
+              id="cutdown-sync-dialog-title"
+              className={`text-base font-semibold ${
+                cutdownSyncDialog.ok ? "text-emerald-100" : "text-red-100"
+              }`}
+            >
+              {cutdownSyncDialog.title}
+            </h2>
+            <p
+              id="cutdown-sync-dialog-body"
+              className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-slate-200"
+            >
+              {cutdownSyncDialog.body}
+            </p>
+            <button
+              type="button"
+              onClick={() => setCutdownSyncDialog(null)}
+              className={`mt-4 h-10 w-full rounded-lg text-sm font-semibold text-white ${
+                cutdownSyncDialog.ok ? "bg-emerald-600 hover:bg-emerald-500" : "bg-red-700 hover:bg-red-600"
+              }`}
+            >
+              OK
+            </button>
+          </div>
         </div>
       ) : null}
       <button
