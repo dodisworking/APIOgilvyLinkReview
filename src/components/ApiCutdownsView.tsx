@@ -278,17 +278,6 @@ export function ApiCutdownsView({
       >
         <div className="space-y-4 rounded-xl border border-emerald-800/40 bg-slate-900 p-3">
           <h2 className="text-base font-semibold text-emerald-200">Link tracker</h2>
-          {!cutdownRemoteWriteConfigured ? (
-            <p className="rounded-md border border-amber-700/50 bg-amber-950/40 px-2 py-1.5 text-[10px] leading-snug text-amber-100/95">
-              Cross-device save: add{" "}
-              <code className="rounded bg-slate-900 px-1">SUPABASE_SERVICE_ROLE_KEY</code>,{" "}
-              <code className="rounded bg-slate-900 px-1">CUTDOWN_SYNC_SECRET</code>, and the same
-              value as{" "}
-              <code className="rounded bg-slate-900 px-1">NEXT_PUBLIC_CUTDOWN_SYNC_SECRET</code> on
-              Vercel, then run the <code className="rounded bg-slate-900 px-1">cutdown_workspace</code>{" "}
-              SQL from the repo schema.
-            </p>
-          ) : null}
           {isAdmin && cutdownRemoteWriteConfigured ? (
             <div className="flex flex-wrap items-center gap-2">
               <button
